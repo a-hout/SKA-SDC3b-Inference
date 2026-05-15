@@ -1,4 +1,10 @@
 # SKA SDC3b Inference
+To do every time logging into the machine:
+
+1. source .venv/bin/activate
+2. export MLFLOW_SERVER_ALLOWED_HOSTS="157.26.103.124:8481"
+3. mlflow server --host 0.0.0.0 --port 8481
+
 
 ## Technologies
 The models are implemented in Python 3.12.12.
@@ -6,9 +12,10 @@ The models are implemented in Python 3.12.12.
 [uv package manager](https://docs.astral.sh/uv/), to facilitate and speed up package management
 
 Python packages,
-* [MLflow](https://mlflow.org/classical-ml), utility for model training
+* [MLflow](https://mlflow.org/classical-ml), utility for model training, running on port 8481
 * [SBI](https://sbi.readthedocs.io/en/latest/), simulation-based inference model
 * [PyTorch](https://docs.pytorch.org/docs/stable/index.html), deep learning library
+* [Kymatio](https://www.kymat.io/), wavelet scattering transformation
 * Polars, data treatment API
 * Matplotlib and Seaborn, plotting libraries
 * Jupyter notebooks, for exploratory data analysis
