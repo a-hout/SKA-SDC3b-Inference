@@ -31,6 +31,6 @@ class PS2DCompressor(nn.Module):
         )
 
     def forward(self, x):
-        x = self.cnn(x)  # need to make sure x is reshaped correctly
-        x = self.fc(x)  # output will be the summary
+        x = self.cnn(x)  # x of shape (batch, 3, 10, 10) if all is well
+        x = self.fc(x)  # output will be the summary of shape (batch, summary_dim)
         return x
