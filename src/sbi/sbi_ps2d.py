@@ -29,6 +29,7 @@ prior = BoxUniform(low=low, high=high)
 r2_scores = []
 rmse_scores = []
 mae_scores = []
+sbi_validation_scores = []
 # we will be using cross validation with k = 3 to train the posterior
 cv = KFold(n_splits=3, shuffle=True, random_state=26)
 for fold, (train_index, test_index) in enumerate(cv.split(range(len(dataset)))):
@@ -46,7 +47,9 @@ for fold, (train_index, test_index) in enumerate(cv.split(range(len(dataset)))):
 
     neural_posterior = posterior_nn(
         model="maf",
-        embedding_net=ps2d_compressor.PS2DCompressor(),  # custom embed, can specify output shape
+        embedding_net=ps2d_compressor.PS2DCompressor(
+            summary_dim=32  # larger vector
+        ),  # custom embed, can specify output shape
         z_score_x=None,
     )  # maf, mdn, etc. -> hyperparameter
     trainer = NPE(density_estimator=neural_posterior, prior=prior)
@@ -58,9 +61,10 @@ for fold, (train_index, test_index) in enumerate(cv.split(range(len(dataset)))):
     posterior = trainer.build_posterior(density_estimator)
 
     theta_pred = []
+    print("Sampling test observations...")
     for x_obs in x_test:
         samples = posterior.sample(
-            (1000,), x=x_obs
+            (1000,), x=x_obs, show_progress_bars=False
         )  # 1000 samples from the approximate distribution given an observation
 
         theta_pred.append(
@@ -73,10 +77,16 @@ for fold, (train_index, test_index) in enumerate(cv.split(range(len(dataset)))):
     rmse_scores.append(root_mean_squared_error(theta_test, theta_pred))
     mae_scores.append(mean_absolute_error(theta_test, theta_pred))
 
+    val_loss = trainer._summary["best_validation_loss"]
+    print(f"Fold {fold + 1} best validation loss: {val_loss}")
+    sbi_validation_scores.append(val_loss)
 
-print("R2 and RMSE scores of cross validators...")
-for index, (r2, rmse, mae) in enumerate(zip(r2_scores, rmse_scores, mae_scores)):
-    print(f"\tcv={index}:\tR2={r2}\tRMSE={rmse}\tMAE={mae}")
+
+print("R2, RMSE and MAE scores of cross validators...")
+for index, (r2, rmse, mae, val_loss) in enumerate(
+    zip(r2_scores, rmse_scores, mae_scores, sbi_validation_scores)
+):
+    print(f"\tcv={index}:\tR2={r2}\tRMSE={rmse}\tMAE={mae}\tValidation loss={val_loss}")
 
 
 # pairplot
