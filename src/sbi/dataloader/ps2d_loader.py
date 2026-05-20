@@ -4,7 +4,10 @@ from torch.utils.data.dataset import Dataset
 
 
 class PS2DDataset(Dataset):
-    def __init__(self, memmap_path, transform=None, target_transform=None):
+    def __init__(
+        self, memmap_path, transform=None, target_transform=None, device="cpu"
+    ):
+        self.device = device
         self.params = np.memmap(
             memmap_path + "theta_memmap.npy",
             shape=(159449, 3),
@@ -35,9 +38,9 @@ class PS2DDataset(Dataset):
 
         return (
             torch.tensor(
-                param.copy()
+                param.copy(), device=self.device
             ),  # copy because we want the arrays to be writable by the Tensor object
-            torch.tensor(obs.copy()),
+            torch.tensor(obs.copy(), device=self.device),
         )  # this will return a tuple of the parameter theta and the observable x at the specified index
 
 
