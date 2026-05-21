@@ -14,19 +14,27 @@ class PS2DCompressor(nn.Module):
         super().__init__()
         self.cnn = nn.Sequential(
             nn.Conv2d(
-                in_channels=3, out_channels=24, kernel_size=3
-            ),  # TODO see if in channel 1 or 3, depending if each specific index has the three redshift ranges
+                in_channels=3, out_channels=32, kernel_size=3, padding=1
+            ),  # padding because 10x10 is quite small and we want to preserve the dimension as much as possible while extracting characteristics
+            nn.BatchNorm2d(32),
             nn.GELU(),  # because lots of small values around 0 and thus we need a continuous function, this also allows us to preclude the need for log normalization
-            nn.Conv2d(in_channels=24, out_channels=48, kernel_size=3),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3),
+            nn.BatchNorm2d(64),
             nn.GELU(),
             nn.Flatten(),
         )
 
         self.fc = nn.Sequential(
-            nn.Linear(in_features=48 * 6 * 6, out_features=192),
+            nn.Linear(in_features=64 * 8 * 8, out_features=256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(
+                0.1
+            ),  # avoid overfitting on the noise (may be more useful for low observation time)
+            nn.Linear(256, 64),
             nn.GELU(),
             nn.Linear(
-                192, summary_dim
+                64, summary_dim
             ),  # should experiment with summary_dim as a hyperparameter, for example [4, 8, 16, 32]
         )
 
