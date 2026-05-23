@@ -1,10 +1,16 @@
 # SKA SDC3b Inference
 To do every time logging into the machine:
 
-1. source .venv/bin/activate
-2. export MLFLOW_SERVER_ALLOWED_HOSTS="157.26.103.124:8481"
-3. mlflow server --host 0.0.0.0 --port 8481
+if nothing running
+1. tmux -s "mlflow"
+2. source .venv/bin/activate
+3. mlflow server --host 0.0.0.0 --port 8481 --cors-allowed-origins "*" --allowed-hosts "157.26.103.124:8481"
+4. ctrl+b and %
+5. python src/...
+6. ctrl+b and
 
+if something running
+1. tmux -t mlflow
 
 ## Technologies
 The models are implemented in Python 3.12.12.
@@ -15,6 +21,7 @@ Python packages,
 * [MLflow](https://mlflow.org/classical-ml), utility for model training, running on port 8481
 * [SBI](https://sbi.readthedocs.io/en/latest/), simulation-based inference model
 * [PyTorch](https://docs.pytorch.org/docs/stable/index.html), deep learning library
+* numpy
 * [Kymatio](https://www.kymat.io/), wavelet scattering transformation
 * Polars, data treatment API
 * Matplotlib and Seaborn, plotting libraries
