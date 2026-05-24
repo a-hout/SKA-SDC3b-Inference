@@ -1,11 +1,29 @@
 """
 SBI implementation for the PS2D dataset pk_128_train_250325_noise
+
+
+for (
+    summary_dim,
+    model,
+    num_transforms,
+    hidden_features,
+) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
+    [16, 32],  # 4 too small, 8 may be interesting but already 2 many h-params
+    [
+        "maf",
+        "nsf",
+    ],  # nsf may be slower and more prone to overfitting but could provide better results
+    [4, 8],  # num transforms for control flow of model
+    [64, 128],  # how big the hidden layers are (width of flow)
+):
 """
 
 import json
 from itertools import product
 
+import matplotlib.pyplot as plt
 import mlflow
+import numpy as np
 import torch
 from compressor import ps2d_compressor
 from dataloader import ps2d_loader
@@ -16,6 +34,7 @@ from sbi.diagnostics import check_tarp, run_tarp
 from sbi.inference import NPE
 from sbi.neural_nets import posterior_nn
 from sbi.utils import BoxUniform
+from scipy.stats import gaussian_kde
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
 from torch.utils.data.dataset import Subset
@@ -58,13 +77,12 @@ for (
     num_transforms,
     hidden_features,
 ) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
-    [16, 32],  # 4 too small, 8 may be interesting but already 2 many h-params
+    [32],  # 4 too small, 8 may be interesting but already 2 many h-params
     [
-        "maf",
         "nsf",
     ],  # nsf may be slower and more prone to overfitting but could provide better results
-    [4, 8],  # num transforms for control flow of model
-    [64, 128],  # how big the hidden layers are (width of flow)
+    [8],  # num transforms for control flow of model
+    [128],  # how big the hidden layers are (width of flow)
 ):
     combination_val_losses = []
     combination_best = {}  # this is the best fold for a given gridsearch combination
@@ -72,7 +90,7 @@ for (
         run_name=f"{model}_sd{summary_dim}_nt{num_transforms}_hf{hidden_features}"
     ):
         cv = KFold(n_splits=3, shuffle=True, random_state=26)
-        for fold, (train_index, test_index) in enumerate(cv.split(range(len(dataset)))):
+        for fold, (train_index, test_index) in enumerate(cv.split(range(1000))):
             with mlflow.start_run(run_name=f"fold_{fold + 1}", nested=True):
                 tracker = MLflowAdapter(mlflow)
 
@@ -209,28 +227,88 @@ with mlflow.start_run(run_name="best_model_eval"):
     mae = mean_absolute_error(theta_test_cpu, theta_pred)
     cv_data["metrics"] = (r2, rmse, mae, cv_data["best_val_loss"])
 
-    # pairplot
+    # pairplot and reionisation history
     theta_mean = theta_test.cpu().mean(dim=1)  # mean across bins for each observation
     low_index = theta_mean.argmin()
     mid_index = (theta_mean - theta_mean.mean()).abs().argmin()
     high_index = theta_mean.argmax()
+
+    z_centers = [158.45, 173.45, 188.45]
+    r_range = ["151.0-165.9", "166.0-180.9", "181.0-195.9"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     pairplot_figs = {}
-    for name, index in [("low", low_index), ("mid", mid_index), ("high", high_index)]:
+    for name, index, color in [
+        ("low", low_index, "red"),
+        ("mid", mid_index, "green"),
+        ("high", high_index, "blue"),
+    ]:
         samples = posterior.sample(
             (5000,), x=x_test[index], show_progress_bars=False
         ).cpu()
-        fig, ax = pairplot(samples, labels=["xHI_z1", "xHI_z2", "xHI_z3"])
-        pairplot_figs[name] = fig
-        fig.savefig(
+
+        x_z = samples.mean(dim=0).numpy()  # mean of distribution
+        lower = samples.quantile(0.16, dim=0).numpy()  # -1sigma from distribution
+        upper = samples.quantile(0.84, dim=0).numpy()  # +1sigma
+        print(f"{name}: true theta = {theta_test[index].cpu().numpy()}")
+
+        for i, zbin in enumerate(r_range):
+            mlflow.log_metrics(
+                {
+                    f"xHI_mean_{name}_z{i + 1}": float(x_z[i]),
+                    f"xHI_lower_{name}_z{i + 1}": float(lower[i]),
+                    f"xHI_upper_{name}_z{i + 1}": float(upper[i]),
+                }
+            )
+
+        # plto reionisation fraction history
+        axes[0].plot(z_centers, x_z, "o-", color=color, label=f"{name} xHI")
+        axes[0].fill_between(z_centers, lower, upper, color=color, alpha=0.2)
+
+        # uncertainty P(x|z) for each redshift range
+        for i in range(3):
+            kde = gaussian_kde(
+                samples[:, i].numpy()
+            )  # shape of sample is (sample number, 3) for each z of xHI
+
+            x_range = np.linspace(0, 1, 200)
+            axes[1].plot(
+                x_range,
+                kde(x_range),
+                color=color,
+                linestyle=["-", "--", ":"][i],
+                label=f"{name} {r_range[i]}",
+            )
+
+        fig_pair, ax = pairplot(samples, labels=["xHI_z1", "xHI_z2", "xHI_z3"])
+        pairplot_figs[name] = fig_pair
+        fig_pair.savefig(
             f"models/sbi/ps2d/pairplot_{name}_xHI.png"
         )  # also available via mlflow
 
+    for boundary in [165.9, 180.9]:
+        axes[0].axvline(boundary, color="gray", linestyle="--", alpha=0.5)
+
+    axes[0].set_xlabel("Frequency (MHz)")
+    axes[0].set_ylabel("mean_xHI")
+    axes[0].set_title("Reionization History x(z)")
+    axes[0].invert_xaxis()  # we want left to be earlier, right to be later
+    axes[0].legend()
+
+    axes[1].set_xlabel("mean_xHI")
+    axes[1].set_ylabel("P(x|z)")
+    axes[1].set_title("Posterior per redshift range")
+    axes[1].legend(fontsize=7)
+
+    fig.savefig("models/sbi/ps2d/reionization_history.png")
+    tracker.add_figure("reionization_history", fig)
+
     # tarp
     num_tarp_samples = 500
-    index = torch.randperm(len(theta_test))[:num_tarp_samples]
+    tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
 
-    prior_samples = theta_test[index]  # ground truth theta
-    prior_predictives = x_test[index]  # corresponding observations
+    prior_samples = theta_test[tarp_index]  # ground truth theta
+    prior_predictives = x_test[tarp_index]  # corresponding observations
 
     ecp, alpha = run_tarp(
         prior_samples,
@@ -242,22 +320,6 @@ with mlflow.start_run(run_name="best_model_eval"):
     )
 
     atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
-    print(atc, "Should be close to 0")
-    print(ks_pval, "Should be larger than 0.05")
-
-    print("Overal R2, RMSE and MAE scores of best cross validator...")
-    print(f"\tR2 = {cv_data['metrics'][0]}")
-    print(f"\tRMSE = {cv_data['metrics'][1]}")
-    print(f"\tMAE = {cv_data['metrics'][2]}")
-    print(f"\tVal loss = {cv_data['metrics'][3]}")
-
-    r_range = ["151.0-165.9", "166.0-180.9", "181.0-195.9"]
-    for bin_index in range(3):
-        r2_bin, rmse_bin, mae_bin = cv_data["metrics_per_bin"][bin_index]
-        print(f"\n\tBin {r_range[bin_index]}")
-        print(f"\tR2 = {r2_bin}")
-        print(f"\tRMSE = {rmse_bin}")
-        print(f"\tMAE = {mae_bin}")
 
     with open("models/sbi/ps2d/evaluation.json", "w") as f:
         json.dump(
