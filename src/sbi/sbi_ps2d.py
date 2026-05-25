@@ -90,7 +90,7 @@ for (
         run_name=f"{model}_sd{summary_dim}_nt{num_transforms}_hf{hidden_features}"
     ):
         cv = KFold(n_splits=3, shuffle=True, random_state=26)
-        for fold, (train_index, test_index) in enumerate(cv.split(range(1000))):
+        for fold, (train_index, test_index) in enumerate(cv.split(range(len(dataset)))):
             with mlflow.start_run(run_name=f"fold_{fold + 1}", nested=True):
                 tracker = MLflowAdapter(mlflow)
 
@@ -292,7 +292,6 @@ with mlflow.start_run(run_name="best_model_eval"):
     axes[0].set_xlabel("Frequency (MHz)")
     axes[0].set_ylabel("mean_xHI")
     axes[0].set_title("Reionization History x(z)")
-    axes[0].invert_xaxis()  # we want left to be earlier, right to be later
     axes[0].legend()
 
     axes[1].set_xlabel("mean_xHI")
