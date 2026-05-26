@@ -1,5 +1,5 @@
 """
-SBI implementation for the PS2D dataset pk_128_train_250325_noise
+SBI implementation for the log10'd PS2D dataset pk_128_train_250325_noise
 
 
 for (
@@ -78,13 +78,12 @@ for (
     num_transforms,
     hidden_features,
 ) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
-    [16, 32],  # 4 too small, 8 may be interesting but already 2 many h-params
+    [32],  # 4 too small, 8 may be interesting but already 2 many h-params
     [
-        "maf",
         "nsf",
     ],  # nsf may be slower and more prone to overfitting but could provide better results
-    [4, 8],  # num transforms for control flow of model
-    [64, 128],  # how big the hidden layers are (width of flow)
+    [8],  # num transforms for control flow of model
+    [128],  # how big the hidden layers are (width of flow)
 ):
     combination_val_losses = []
     combination_best = {}  # this is the best fold for a given gridsearch combination

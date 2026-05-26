@@ -30,8 +30,8 @@ class PS2DDataset(Dataset):
         param = self.params[idx]
         obs = self.observables[idx]
 
-        param_tensor = (
-            torch.tensor(param.copy(), device=self.device),
+        param_tensor = torch.tensor(
+            param.copy(), device=self.device
         )  # copy because we want the arrays to be writable by the Tensor object
 
         obs_tensor = torch.tensor(obs.copy(), device=self.device)
