@@ -52,16 +52,15 @@ device = (
 _ = torch.manual_seed(26)
 
 dataset = ps2d_loader.PS2DDataset(
-    "datasets/pk_128_train_250325_noise/memmap/", device=device
+    "datasets/pk_128_train_250325_noise/memmap/",
+    device=device,
+    transform=lambda x: torch.log10(x + 0.04),  # because obs min at -0.0395
 )
 theta, obs = dataset[:]
-
-x = np.log10(1e-6 + obs)
 
 low = torch.tensor([0.0, 0.0, 0.0], device=device)
 high = theta.max(dim=0).values.detach().clone().to(device)
 prior = BoxUniform(low=low, high=high, device=device)
-
 
 cv_data = {
     "sbi_validation_scores": [],
@@ -79,12 +78,13 @@ for (
     num_transforms,
     hidden_features,
 ) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
-    [32],  # 4 too small, 8 may be interesting but already 2 many h-params
+    [16, 32],  # 4 too small, 8 may be interesting but already 2 many h-params
     [
+        "maf",
         "nsf",
     ],  # nsf may be slower and more prone to overfitting but could provide better results
-    [8],  # num transforms for control flow of model
-    [128],  # how big the hidden layers are (width of flow)
+    [4, 8],  # num transforms for control flow of model
+    [64, 128],  # how big the hidden layers are (width of flow)
 ):
     combination_val_losses = []
     combination_best = {}  # this is the best fold for a given gridsearch combination
@@ -103,6 +103,8 @@ for (
                         "model": model,
                         "num_transforms": num_transforms,
                         "hidden_features": hidden_features,
+                        "act_fun": "ELU",
+                        "transform": "log10",
                     }
                 )
 
@@ -121,7 +123,8 @@ for (
                 neural_posterior = posterior_nn(
                     model=model,
                     embedding_net=ps2d_compressor.PS2DCompressor(
-                        summary_dim=summary_dim
+                        summary_dim=summary_dim,
+                        act_fun=torch.nn.ELU,  # ELU because log -> negative values and RELU is not continous there
                     ),
                     z_score_x=None,
                     hidden_features=hidden_features,
@@ -179,12 +182,14 @@ for (
             "num_transforms": num_transforms,
             "hidden_features": hidden_features,
             "mean_val_loss": mean_val_loss,
+            "act_fun": "ELU",
+            "transform": "log10",
         }
 
-torch.save(cv_data["sbi_posterior"], "models/sbi/ps2d/best_posterior.pt")
+torch.save(cv_data["sbi_posterior"], "models/sbi/logps2d/best_posterior.pt")
 torch.save(
     cv_data["sbi_density_estimator"].state_dict(),
-    "models/sbi/ps2d/best_density_estimator.pt",
+    "models/sbi/logps2d/best_density_estimator.pt",
 )
 
 #### calibration testing and visuals of best model
@@ -285,7 +290,7 @@ with mlflow.start_run(run_name="best_model_eval"):
         fig_pair, ax = pairplot(samples, labels=["xHI_z1", "xHI_z2", "xHI_z3"])
         pairplot_figs[name] = fig_pair
         fig_pair.savefig(
-            f"models/sbi/ps2d/pairplot_{name}_xHI.png"
+            f"models/sbi/logps2d/pairplot_{name}_xHI.png"
         )  # also available via mlflow
 
     for boundary in [165.9, 180.9]:
@@ -301,7 +306,7 @@ with mlflow.start_run(run_name="best_model_eval"):
     axes[1].set_title("Posterior per redshift range")
     axes[1].legend(fontsize=7)
 
-    fig.savefig("models/sbi/ps2d/reionization_history.png")
+    fig.savefig("models/sbi/logps2d/reionization_history.png")
     tracker.add_figure("reionization_history", fig)
 
     # tarp
@@ -322,7 +327,7 @@ with mlflow.start_run(run_name="best_model_eval"):
 
     atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
 
-    with open("models/sbi/ps2d/evaluation.json", "w") as f:
+    with open("models/sbi/logps2d/evaluation.json", "w") as f:
         json.dump(
             {
                 "r2": float(cv_data["metrics"][0]),
@@ -347,7 +352,7 @@ with mlflow.start_run(run_name="best_model_eval"):
 
     tarp_fig, ax = plot_tarp(ecp.cpu(), alpha.cpu())
 
-    tarp_fig.savefig("models/sbi/ps2d/tarp_plot.png")  # also available via mlflow
+    tarp_fig.savefig("models/sbi/logps2d/tarp_plot.png")  # also available via mlflow
 
     mlflow.log_metrics(
         {

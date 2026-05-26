@@ -20,7 +20,7 @@ class PS2DDataset(Dataset):
             mode="r",
             dtype=np.float32,
         )
-        self.transform = transform  # no transform for now.
+        self.transform = transform  # log10
         self.target_transform = target_transform
 
     def __len__(self):
@@ -29,22 +29,25 @@ class PS2DDataset(Dataset):
     def __getitem__(self, idx):
         param = self.params[idx]
         obs = self.observables[idx]
-        """
+
+        param_tensor = (
+            torch.tensor(param.copy(), device=self.device),
+        )  # copy because we want the arrays to be writable by the Tensor object
+
+        obs_tensor = torch.tensor(obs.copy(), device=self.device)
+
         if self.transform:
-            obs = self.transform(obs)
+            obs_tensor = self.transform(obs_tensor)
         if self.target_transform:
-            param = self.target_transform(param)
-        """
+            param_tensor = self.target_transform(param_tensor)
 
         return (
-            torch.tensor(
-                param.copy(), device=self.device
-            ),  # copy because we want the arrays to be writable by the Tensor object
-            torch.tensor(obs.copy(), device=self.device),
+            param_tensor,
+            obs_tensor,
         )  # this will return a tuple of the parameter theta and the observable x at the specified index
 
 
 if __name__ == "__main__":
     dataset = PS2DDataset("datasets/pk_128_train_250325_noise/memmap/")
-    theta, x = dataset[0]
-    print(theta.shape, x.shape)  # here expect (3,) and (3, 10, 10)
+    theta, x = dataset[:]
+    print(x.min())  # min at -0.0395
