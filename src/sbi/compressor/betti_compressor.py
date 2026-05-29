@@ -28,10 +28,7 @@ class BettiCompressor(nn.Module):
         )
 
     def forward(self, x):
-        # shape (batch, 20, 3, 3, 21), quite complex so need to reduce
-        x = x.mean(
-            dim=1
-        )  # we average the noise realisations (same logic already applied for ps2d) to reduce dimensionality
+        # we don't average out the noise, but we pick a random noise in data loader
         # shape (batch, 3, 3, 21)
         x = x.flatten(start_dim=1)  # shape (batch, 189)
         x = self.fc(

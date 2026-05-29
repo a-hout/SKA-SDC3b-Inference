@@ -30,11 +30,17 @@ class BettiDataset(Dataset):
             param = self.target_transform(param)
         """
 
+        random_noise = np.random.randint(
+            0, obs.shape[0]
+        )  # get index of random noise realisation (between 0 and 21)
+
         return (
             torch.tensor(
                 param[0].copy(), device=self.device
             ),  # first element since the 20 noise realisations all share the same theta -> shape (3, )
-            torch.tensor(obs.copy(), device=self.device),  # -> shape (20, 3, 3, 21)
+            torch.tensor(
+                obs[random_noise].copy(), device=self.device
+            ),  # -> shape (3, 3, 21)
         )  # this will return a tuple of the parameter theta and the observable x at the specified index
 
 
