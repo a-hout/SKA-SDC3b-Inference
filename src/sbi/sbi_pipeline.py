@@ -1,0 +1,647 @@
+##################################################################################################################
+
+"""
+Pipeline for generic data types (ps2d, betti, wst) training, with the aid of mlflow.
+
+1. Init of parameters and data
+
+2. Gridsearch for best hyperparameters concerning the SBI model.
+
+3. Train again 30 times with best parameters with different seeds to validate stability
+train -> get val-loss -> run tarp (with 10 min timeout) and get calibration results
+
+4. at the end, get the best model with the best calibration (most negative val-loss and tarp closest to 1)
+
+5. Full evaluation with metrics, overal and per z_x
+R2
+RMSE
+MAE
+Val loss
+
+pairplots
+
+reionisation history with the three scenarios + the actual mean ground truth for comparison
+
+P(x | z) plot with the three scenarios (3 plots) (and comparison with ground truth?)
+"""
+
+##################################################################################################################
+# 0. imports
+##################
+import json
+import os
+import signal
+import sys
+from itertools import product
+
+import matplotlib.pyplot as plt
+import mlflow
+import numpy as np
+import torch
+from compressor import betti_compressor, ps2d_compressor
+from dataloader import betti_loader, ps2d_loader
+from mlflowadapter import MLflowAdapter
+from sbi.analysis import pairplot
+from sbi.analysis.plot import plot_tarp
+from sbi.diagnostics import check_tarp, run_tarp
+from sbi.inference import NPE
+from sbi.neural_nets import posterior_nn
+from sbi.utils import BoxUniform
+from scipy.stats import gaussian_kde
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+from sklearn.model_selection import KFold
+from torch.utils.data.dataset import Subset, random_split
+
+##################
+# 1. inits
+##################
+
+device = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps"
+    if torch.mps.is_available()
+    else "cpu"
+)
+_ = torch.manual_seed(26)
+
+try:
+    data_type = sys.argv[1].lower().strip("")
+except IndexError:
+    print(
+        "Normal usage is: python src/sbi/sbi_pipeline.py <data_type> <optional best params path>"
+    )
+    exit(1)
+
+try:
+    with open(sys.argv[2]) as f:  # load path with best model parameters
+        BEST_PARAMS = json.load(f)["best_params"]
+except (IndexError, FileNotFoundError):
+    BEST_PARAMS = None
+
+match data_type:
+    case "ps2d":
+        mlflow.set_experiment("SBI PS2D")
+        embedding = ps2d_compressor.PS2DCompressor(3)
+
+        dataset = ps2d_loader.PS2DDataset(
+            "datasets/pk_128_train_250325_noise/memmap/", device=device
+        )
+
+    case "betti":
+        mlflow.set_experiment("SBI Betti")
+        embedding = betti_compressor.BettiCompressor(3)
+
+        dataset = betti_loader.BettiDataset("datasets/betti/", device=device)
+
+    case "wst":
+        mlflow.set_experiment("SBI WST")
+
+        pass
+
+    case "ps2d+betti" | "betti+ps2d":  # combine both ps2d and betti
+        data_type = "ps2d+betti"
+        mlflow.set_experiment("SBI PS2D & Betti")
+
+        pass
+
+    case "ps2d+wst" | "wst+ps2d":  # combine both ps2d and wst
+        data_type = "ps2d+wst"
+        mlflow.set_experiment("SBI PS2D & WST")
+        pass
+
+    case "betti+wst" | "wst+betti":  # combine both betti and wst
+        data_type = "betti+wst"
+        mlflow.set_experiment("SBI Betti & WST")
+
+        pass
+
+    case (  # combine all data types
+        "ps2d+betti+wst"
+        | "ps2d+wst+betti"
+        | "betti+ps2d+wst"
+        | "betti+wst+ps2d"
+        | "wst+ps2d+betti"
+        | "wst+betti+ps2d"
+    ):
+        data_type = "ps2d+betti+wst"
+        mlflow.set_experiment("SBI PS2D & Betti & WST")
+
+    case other:
+        print("No such data type or data type combination.")
+        exit(1)
+
+
+def get_compressor(data_type, summary_dim):
+    match data_type:
+        case "ps2d":
+            return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
+        case "betti":
+            return betti_compressor.BettiCompressor(summary_dim=summary_dim)
+        # case other:
+        # pass  # do later for wst and for combinations
+
+
+theta, _ = dataset[:]
+
+low = torch.tensor([0.0, 0.0, 0.0], device=device)
+high = theta.max(dim=0).values.detach().clone().to(device)
+prior = BoxUniform(low=low, high=high, device=device)
+
+##################
+# 2. gridsearching
+##################
+# should be an option to disable this section if already best params found (and then load via json for 30-run)
+if BEST_PARAMS is None:
+    cv_data = {
+        "sbi_validation_scores": [],
+        "metrics": (),
+        "metrics_per_bin": [],
+        "split_index": (),
+    }
+
+    global_best_mean_val_loss = float("inf")
+
+    # we will be using cross validation with k = 3 to train the posterior
+    for (
+        summary_dim,
+        model,
+        num_transforms,
+        hidden_features,
+    ) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
+        [32],  # 4 too small, 8 may be interesting but already 2 many h-params
+        [
+            "nsf",
+        ],  # nsf may be slower and more prone to overfitting but could provide better results
+        [8],  # num transforms for control flow of model
+        [128],  # how big the hidden layers are (width of flow)
+    ):
+        combination_val_losses = []
+        combination_best = {}  # this is the best fold for a given gridsearch combination
+        with mlflow.start_run(
+            run_name=f"{model}_sd{summary_dim}_nt{num_transforms}_hf{hidden_features}"
+        ):
+            cv = KFold(n_splits=3, shuffle=True, random_state=26)
+            for fold, (train_index, test_index) in enumerate(
+                cv.split(range(len(dataset)))
+            ):
+                with mlflow.start_run(run_name=f"fold_{fold + 1}", nested=True):
+                    tracker = MLflowAdapter(mlflow)
+
+                    mlflow.log_params(
+                        {
+                            "fold": fold + 1,
+                            "summary_dim": summary_dim,
+                            "model": model,
+                            "num_transforms": num_transforms,
+                            "hidden_features": hidden_features,
+                        }
+                    )
+
+                    train_set = Subset(dataset, train_index)
+                    test_set = Subset(dataset, test_index)
+
+                    theta_train, x_train = zip(
+                        *[train_set[i] for i in range(len(train_set))]
+                    )
+                    theta_train = torch.stack(theta_train)
+                    x_train = torch.stack(x_train)
+                    theta_test, x_test = zip(
+                        *[test_set[i] for i in range(len(test_set))]
+                    )
+                    theta_test = torch.stack(theta_test)
+                    x_test = torch.stack(x_test)
+
+                    neural_posterior = posterior_nn(
+                        model=model,
+                        embedding_net=get_compressor(data_type, summary_dim),
+                        z_score_x=None,
+                        hidden_features=hidden_features,
+                        num_transforms=num_transforms,
+                    )
+
+                    trainer = NPE(
+                        density_estimator=neural_posterior,
+                        prior=prior,
+                        device=device,
+                        tracker=tracker,  # built in by sbi for the tracker with adapter
+                    )
+
+                    density_estimator = trainer.append_simulations(
+                        theta_train, x_train
+                    ).train(
+                        training_batch_size=512,
+                        show_train_summary=True,
+                    )
+
+                    posterior = trainer.build_posterior(density_estimator)
+
+                    val_loss = trainer._summary["best_validation_loss"][0]
+                    mlflow.log_metric("val_loss", val_loss)
+                    combination_val_losses.append(val_loss)
+
+                    if not combination_best or val_loss < combination_best["val_loss"]:
+                        combination_best = {
+                            "val_loss": val_loss,
+                            "density_estimator": density_estimator,
+                            "posterior": posterior,
+                            "split_index": (train_index, test_index),
+                        }
+
+            # here we compare combinations by mean val_loss for folds
+            mean_val_loss = sum(combination_val_losses) / len(combination_val_losses)
+            mlflow.log_metric("mean_val_loss", mean_val_loss)  # log outside fold runs
+            mlflow.log_params(
+                {
+                    "summary_dim": summary_dim,
+                    "model": model,
+                    "num_transforms": num_transforms,
+                    "hidden_features": hidden_features,
+                }
+            )
+        if mean_val_loss < global_best_mean_val_loss:
+            global_best_mean_val_loss = mean_val_loss
+            cv_data["sbi_density_estimator"] = combination_best["density_estimator"]
+            cv_data["sbi_posterior"] = combination_best["posterior"]
+            cv_data["split_index"] = combination_best["split_index"]
+            cv_data["best_val_loss"] = combination_best["val_loss"]
+            cv_data["best_params"] = {
+                "summary_dim": summary_dim,
+                "model": model,
+                "num_transforms": num_transforms,
+                "hidden_features": hidden_features,
+            }
+    with open(f"models/sbi/{data_type}/best_params.json", "w") as f:
+        json.dump(
+            {
+                "best_params": cv_data["best_params"],
+            },
+            f,
+            indent=4,
+        )
+    BEST_PARAMS = cv_data["best_params"]
+
+##################
+# 3. 30-run
+##################
+summary_dim, model, num_transforms, hidden_features = BEST_PARAMS.values()
+
+model_info = {
+    "number": [],
+    "val_loss_values": [],
+    "tarp_values": [],
+    "tarp_atc_values": [],
+    "posteriors": [],
+    "density_estimators": [],
+}
+
+with mlflow.start_run(run_name="Best model run"):
+    for i in range(30):
+        try:
+            print("making model directory...")
+            os.mkdir(f"models/sbi/{data_type}/trial-{i + 1}/")
+        except OSError:
+            print("directory already exists.")
+
+        model_info["number"].append(i + 1)
+        gen = torch.manual_seed(i + 1)
+
+        with mlflow.start_run(run_name=f"number_{i + 1}", nested=True):
+            tracker = MLflowAdapter(mlflow)
+
+            mlflow.log_params(
+                {
+                    "number": i + 1,
+                    "summary_dim": summary_dim,
+                    "model": model,
+                    "num_transforms": num_transforms,
+                    "hidden_features": hidden_features,
+                }
+            )
+
+            train_set, test_set = random_split(dataset, [0.8, 0.2], generator=gen)
+
+            theta_train, x_train = zip(*[train_set[j] for j in range(len(train_set))])
+            theta_train = torch.stack(theta_train)
+            x_train = torch.stack(x_train)
+            theta_test, x_test = zip(*[test_set[j] for j in range(len(test_set))])
+            theta_test = torch.stack(theta_test)
+            x_test = torch.stack(x_test)
+
+            neural_posterior = posterior_nn(
+                model=model,
+                embedding_net=get_compressor(data_type, summary_dim),
+                z_score_x=None,
+                hidden_features=hidden_features,
+                num_transforms=num_transforms,
+            )
+
+            trainer = NPE(
+                density_estimator=neural_posterior,
+                prior=prior,
+                device=device,
+                tracker=tracker,  # built in by sbi for the tracker with adapter
+            )
+
+            density_estimator = trainer.append_simulations(theta_train, x_train).train(
+                training_batch_size=512,
+                show_train_summary=True,
+            )
+
+            posterior = trainer.build_posterior(density_estimator)
+
+            val_loss = trainer._summary["best_validation_loss"][0]
+            model_info["val_loss_values"].append((i + 1, val_loss))
+            mlflow.log_metric("val_loss", float(val_loss))
+
+            # tarp
+            def timeout_handler(signum, frame):
+                """
+                we need to kill the TARPing if it's >10 minutes (bad luck due to bad posterior/prior sampling)
+                """
+                raise TimeoutError("TARP timed out")
+
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(600)  # 10 minutes
+
+            try:
+                num_tarp_samples = 500
+                tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+
+                prior_samples = theta_test[tarp_index]  # ground truth theta
+                prior_predictives = x_test[tarp_index]  # corresponding observations
+
+                ecp, alpha = run_tarp(
+                    prior_samples,
+                    prior_predictives,
+                    posterior,
+                    references=None,
+                    num_posterior_samples=1000,
+                    use_batched_sampling=True,
+                )
+
+                atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+                signal.alarm(0)
+                model_info["tarp_values"].append((i + 1, ks_pval))
+                model_info["tarp_atc_values"].append((i + 1, atc))
+                tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
+                tarp_fig.savefig(f"models/sbi/{data_type}/trial-{i + 1}/tarp_plot.png")
+            except TimeoutError:
+                continue  # go to the next run
+
+            mlflow.log_metrics(
+                {
+                    "tarp_pval": float(ks_pval),
+                    "tarp_atc": float(
+                        atc
+                    ),  # not used in the scoring but can be interesting to observe
+                }
+            )
+
+            tracker.add_figure("tarp_plot", tarp_fig)
+
+            model_info["density_estimators"].append((i + 1, density_estimator))
+            model_info["posteriors"].append((i + 1, posterior))
+
+    # best model is first model that is also well calbirated
+    loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
+    tarp_dict = dict(model_info["tarp_values"])  # this way we have {number: ks_pval}
+    best_num = None
+    best_val_loss = float("inf")  # infinity is bad
+
+    for run_num, val_loss in loss_sorted:
+        if run_num not in tarp_dict:
+            continue  # means tarp could not be ran for this model
+        if tarp_dict[run_num] >= 0.99:
+            best_num = run_num
+            best_val_loss = val_loss
+            break  # get first best model with good calibration
+    if best_num is None:
+        best_num = loss_sorted[0][
+            0
+        ]  # get best model but it won't be calibrated, last resort
+
+    mlflow.log_metric("best model number", best_num)
+
+
+tarp_dict = dict(model_info["tarp_values"])
+tarp_dict_atc = dict(model_info["tarp_atc_values"])
+
+##################
+# 4. best model
+##################
+
+best_density_estimator = dict(model_info["density_estimators"])[best_num]
+best_posterior = dict(model_info["posteriors"])[best_num]
+torch.save(
+    best_density_estimator.state_dict(),
+    f"models/sbi/{data_type}/best_density_estimator.pt",
+)
+torch.save(best_posterior, f"models/sbi/{data_type}/best_posterior.pt")
+
+##################
+# 5. eval
+##################
+best_model_info = {}
+with mlflow.start_run(run_name="best_model_evaluation"):
+    tracker = MLflowAdapter(mlflow)
+    gen = torch.manual_seed(best_num)
+
+    _, test_set = random_split(dataset, [0.8, 0.2], generator=gen)
+    theta_test, x_test = zip(*[test_set[i] for i in range(len(test_set))])
+    theta_test = torch.stack(theta_test)
+    x_test = torch.stack(x_test)
+
+    # metrics
+    theta_pred = []
+    print("Sampling test observations...")
+    for x_obs in x_test:
+        samples = best_posterior.sample(
+            (1000,),
+            x=x_obs,
+            show_progress_bars=False,
+        )  # 1000 samples from the approximate distribution given an observation
+
+        theta_pred.append(
+            samples.mean(dim=0)
+        )  # average (mean here) of the 1000 samples appended to prediction list
+
+    theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
+    theta_test_cpu = theta_test.cpu()
+
+    best_model_info["metrics_per_bin"] = []
+    for bin_index in range(3):  # getting metrics per redshift range
+        r2_bin = r2_score(theta_test_cpu[:, bin_index], theta_pred[:, bin_index])
+        rmse_bin = root_mean_squared_error(
+            theta_test_cpu[:, bin_index], theta_pred[:, bin_index]
+        )
+        mae_bin = mean_absolute_error(
+            theta_test_cpu[:, bin_index], theta_pred[:, bin_index]
+        )
+        best_model_info["metrics_per_bin"].append((r2_bin, rmse_bin, mae_bin))
+
+    r2 = r2_score(theta_test_cpu, theta_pred)
+    rmse = root_mean_squared_error(theta_test_cpu, theta_pred)
+    mae = mean_absolute_error(theta_test_cpu, theta_pred)
+    best_model_info["metrics"] = (r2, rmse, mae, best_val_loss)
+
+    # pairplots reionisation history
+    theta_mean = theta_test.cpu().mean(dim=1)  # mean across bins for each observation
+    low_index = theta_mean.argmin()
+    mid_index = (theta_mean - theta_mean.mean()).abs().argmin()
+    high_index = theta_mean.argmax()
+
+    z_centers = [158.45, 173.45, 188.45]
+    r_range = ["151.0-165.9", "166.0-180.9", "181.0-195.9"]
+
+    scenario_samples = {}
+
+    pairplot_figs = {}
+    fig, axes = plt.subplots(1, 1, figsize=(7, 5))
+
+    for name, index, color in [
+        ("low", low_index, "red"),
+        ("mid", mid_index, "green"),
+        ("high", high_index, "blue"),
+    ]:
+        samples = best_posterior.sample(
+            (5000,), x=x_test[index], show_progress_bars=False
+        ).cpu()
+        scenario_samples[name] = (
+            samples,
+            index,
+            color,
+            theta_test[index].cpu().numpy(),
+        )  # avoid resampling later
+
+        x_z = samples.mean(dim=0).numpy()  # mean of distribution
+        lower = samples.quantile(0.16, dim=0).numpy()  # -1sigma from distribution
+        upper = samples.quantile(0.84, dim=0).numpy()  # +1sigma
+        true_theta = theta_test[index].cpu().numpy()
+
+        for i, zbin in enumerate(r_range):
+            mlflow.log_metrics(
+                {
+                    f"xHI_mean_{name}_z{i + 1}": float(x_z[i]),
+                    f"xHI_lower_{name}_z{i + 1}": float(lower[i]),
+                    f"xHI_upper_{name}_z{i + 1}": float(upper[i]),
+                }
+            )
+
+        # plto reionisation fraction history
+        axes.plot(z_centers, x_z, "o-", color=color, label=f"{name} posterior xHI")
+        axes.fill_between(z_centers, lower, upper, color=color, alpha=0.2)
+        axes.plot(
+            z_centers,
+            true_theta,
+            "--",
+            color=color,
+            markersize=10,
+            alpha=0.7,
+            label=f"{name} true xHI",
+        )
+
+        fig_pair, ax = pairplot(samples, labels=["xHI_z1", "xHI_z2", "xHI_z3"])
+        pairplot_figs[name] = fig_pair
+        fig_pair.savefig(
+            f"models/sbi/{data_type}/pairplot_{name}_xHI.png"
+        )  # also available via mlflow
+
+    for boundary in [165.9, 180.9]:
+        axes.axvline(boundary, color="gray", linestyle="--", alpha=0.5)
+
+    axes.set_xlabel("Frequency (MHz)")
+    axes.set_ylabel("mean_xHI")
+    axes.set_title("Reionization History x(z)")
+    axes.legend()
+
+    fig.savefig(f"models/sbi/{data_type}/reionization_history.png")
+
+    # uncetainty P(x|z) plots
+    fig_pxz, axes_pxz = plt.subplots(
+        1, 3, figsize=(15, 4), sharey=True
+    )  # three plots sharing a y
+
+    for ax, (name, index, color) in zip(
+        axes_pxz,
+        [
+            ("low", low_index, "red"),
+            ("mid", mid_index, "green"),
+            ("high", high_index, "blue"),
+        ],
+    ):
+        samples = scenario_samples[name][0]
+
+        true_theta = scenario_samples[name][3]
+
+        x_range = np.linspace(0, 1, 200)
+        for i, (zbin, ls) in enumerate(zip(r_range, ["-", "--", ":"])):
+            kde = gaussian_kde(samples[:, i].numpy())
+            ax.plot(x_range, kde(x_range), color=color, linestyle=ls, label=zbin)
+            # ground truth vertical line
+            ax.axvline(true_theta[i], color=color, linestyle=ls, alpha=0.5, linewidth=2)
+
+        ax.set_title(f"{name} xHI")
+        ax.set_xlabel("mean_xHI")
+        ax.legend(fontsize=7)
+
+    axes_pxz[0].set_ylabel("P(x|z)")
+    fig_pxz.savefig(f"models/sbi/{data_type}/pxz_plot.png")
+
+    # tarp plot already done, just retrieve it from the best model since it's saved
+    best_tarp_fig_path = f"models/sbi/{data_type}/trial-{best_num}/tarp_plot.png"
+    if os.path.exists(best_tarp_fig_path):
+        tarp_reload_fig, tarp_reload_ax = plt.subplots()
+        tarp_reload_ax.imshow(plt.imread(best_tarp_fig_path))
+        tarp_reload_ax.axis("off")
+        tracker.add_figure("tarp_plot", tarp_reload_fig)
+
+    # save evaluation
+    with open(f"models/sbi/{data_type}/evaluation.json", "w") as f:
+        json.dump(
+            {
+                "r2": float(best_model_info["metrics"][0]),
+                "rmse": float(best_model_info["metrics"][1]),
+                "mae": float(best_model_info["metrics"][2]),
+                "bin_metrics": {
+                    r_range[i]: {
+                        "r2": float(best_model_info["metrics_per_bin"][i][0]),
+                        "rmse": float(best_model_info["metrics_per_bin"][i][1]),
+                        "mae": float(best_model_info["metrics_per_bin"][i][2]),
+                    }
+                    for i in range(3)
+                },
+                "tarp_atc": float(tarp_dict_atc.get(best_num, float("nan"))),
+                "tarp_ks_pval": float(tarp_dict.get(best_num, float("nan"))),
+                "val_loss": float(best_model_info["metrics"][3]),
+            },
+            f,
+            indent=4,
+        )
+
+    mlflow.log_metrics(
+        {
+            "r2": float(r2),
+            "rmse": float(rmse),
+            "mae": float(mae),
+            "tarp_atc": float(tarp_dict_atc.get(best_num, float("nan"))),
+            "tarp_ks_pval": float(tarp_dict.get(best_num, float("nan"))),
+        }
+    )
+    # log per-bin metrics
+    for i, zbin in enumerate(r_range):
+        mlflow.log_metrics(
+            {
+                f"r2_{zbin}": float(best_model_info["metrics_per_bin"][i][0]),
+                f"rmse_{zbin}": float(best_model_info["metrics_per_bin"][i][1]),
+                f"mae_{zbin}": float(best_model_info["metrics_per_bin"][i][2]),
+            }
+        )
+
+    # log figures
+    tracker.add_figure("reionization_history", fig)
+    tracker.add_figure("pxz_plot", fig_pxz)
+    for name in ["low", "mid", "high"]:
+        tracker.add_figure(f"pairplot_{name}_xHI", pairplot_figs[name])
+
+mlflow.end_run()
