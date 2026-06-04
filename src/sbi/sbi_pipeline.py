@@ -89,11 +89,20 @@ match data_type:
             "datasets/pk_128_train_250325_noise/memmap/", device=device
         )
 
+        theta, _ = dataset[:]
+        low = theta.min(dim=0).values.detach().clone().to(device)
+        high = theta.max(dim=0).values.detach().clone().to(device)
+
     case "betti":
         mlflow.set_experiment("SBI Betti")
         embedding = betti_compressor.BettiCompressor(3)
 
         dataset = betti_loader.BettiDataset("datasets/betti/", device=device)
+
+        theta = torch.tensor(dataset.params[:, 0, :], device=dataset.device)
+
+        low = theta.min(dim=0).values.detach().clone()
+        high = theta.max(dim=0).values.detach().clone()
 
     case "wst":
         mlflow.set_experiment("SBI WST")
@@ -143,12 +152,6 @@ def get_compressor(data_type, summary_dim):
         # pass  # do later for wst and for combinations
 
 
-theta, _ = dataset[:]
-
-theta_low = theta.min(dim=0).values.detach().clone().to(device)
-low = torch.tensor([0.0, 0.0, 0.0], device=device)  # is also theta_low normally
-theta_high = theta.max(dim=0).values.detach().clone().to(device)
-high = torch.tensor([1.0, 1.0, 1.0], device=device)
 prior = BoxUniform(low=low, high=high, device=device)
 
 ##################
@@ -219,7 +222,7 @@ if BEST_PARAMS is None:
                         model=model,
                         embedding_net=get_compressor(data_type, summary_dim),
                         z_score_x="none",
-                        z_score_theta="independent",
+                        # z_score_theta="independent",
                         hidden_features=hidden_features,
                         num_transforms=num_transforms,
                     )
@@ -289,7 +292,7 @@ if BEST_PARAMS is None:
 # 3. 30-run
 ##################
 summary_dim, model, num_transforms, hidden_features = BEST_PARAMS.values()
-
+# dataset = Subset(dataset, range(1000)) #for testing
 model_info = {
     "number": [],
     "val_loss_values": [],
@@ -301,6 +304,7 @@ model_info = {
 
 with mlflow.start_run(run_name="Best model run"):
     for i in range(30):
+        # i = 0
         try:
             print("making model directory...")
             os.mkdir(f"models/sbi/{data_type}/trial-{i + 1}/")
@@ -338,7 +342,7 @@ with mlflow.start_run(run_name="Best model run"):
             neural_posterior = posterior_nn(
                 model=model,
                 embedding_net=get_compressor(data_type, summary_dim),
-                # z_score_x="none",
+                z_score_x="none",
                 hidden_features=hidden_features,
                 num_transforms=num_transforms,
             )
