@@ -51,13 +51,14 @@ from scipy.stats import gaussian_kde
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
 from torch.utils.data.dataset import Subset, random_split
+from tqdm import tqdm
 
 ##################
 # 1. inits
 ##################
 
 device = (
-    "cuda"
+    "cuda:3"
     if torch.cuda.is_available()
     else "mps"
     if torch.mps.is_available()
@@ -144,8 +145,10 @@ def get_compressor(data_type, summary_dim):
 
 theta, _ = dataset[:]
 
-low = torch.tensor([0.0, 0.0, 0.0], device=device)
-high = theta.max(dim=0).values.detach().clone().to(device)
+theta_low = theta.min(dim=0).values.detach().clone().to(device)
+low = torch.tensor([0.0, 0.0, 0.0], device=device)  # is also theta_low normally
+theta_high = theta.max(dim=0).values.detach().clone().to(device)
+high = torch.tensor([1.0, 1.0, 1.0], device=device)
 prior = BoxUniform(low=low, high=high, device=device)
 
 ##################
@@ -169,7 +172,7 @@ if BEST_PARAMS is None:
         num_transforms,
         hidden_features,
     ) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
-        [32],  # 4 too small, 8 may be interesting but already 2 many h-params
+        [16],  # 4 too small, 8 may be interesting but already 2 many h-params
         [
             "nsf",
         ],  # nsf may be slower and more prone to overfitting but could provide better results
@@ -215,7 +218,8 @@ if BEST_PARAMS is None:
                     neural_posterior = posterior_nn(
                         model=model,
                         embedding_net=get_compressor(data_type, summary_dim),
-                        z_score_x=None,
+                        z_score_x="none",
+                        z_score_theta="independent",
                         hidden_features=hidden_features,
                         num_transforms=num_transforms,
                     )
@@ -323,15 +327,18 @@ with mlflow.start_run(run_name="Best model run"):
 
             theta_train, x_train = zip(*[train_set[j] for j in range(len(train_set))])
             theta_train = torch.stack(theta_train)
+            # theta_train = (theta_train - theta_low) / (theta_high - theta_low + 1e-8)
             x_train = torch.stack(x_train)
+
             theta_test, x_test = zip(*[test_set[j] for j in range(len(test_set))])
             theta_test = torch.stack(theta_test)
+            # theta_test = (theta_test - theta_low) / (theta_high - theta_low + 1e-8)
             x_test = torch.stack(x_test)
 
             neural_posterior = posterior_nn(
                 model=model,
                 embedding_net=get_compressor(data_type, summary_dim),
-                z_score_x=None,
+                # z_score_x="none",
                 hidden_features=hidden_features,
                 num_transforms=num_transforms,
             )
@@ -387,7 +394,7 @@ with mlflow.start_run(run_name="Best model run"):
                 tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
                 tarp_fig.savefig(f"models/sbi/{data_type}/trial-{i + 1}/tarp_plot.png")
             except TimeoutError:
-                continue  # go to the next run
+                exit(0)  # continue  # go to the next run
 
             mlflow.log_metrics(
                 {
@@ -403,25 +410,27 @@ with mlflow.start_run(run_name="Best model run"):
             model_info["density_estimators"].append((i + 1, density_estimator))
             model_info["posteriors"].append((i + 1, posterior))
 
-    # best model is first model that is also well calbirated
-    loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
-    tarp_dict = dict(model_info["tarp_values"])  # this way we have {number: ks_pval}
-    best_num = None
-    best_val_loss = float("inf")  # infinity is bad
+        # best model is first model that is also well calbirated
+        loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
+        tarp_dict = dict(
+            model_info["tarp_values"]
+        )  # this way we have {number: ks_pval}
+        best_num = None
+        best_val_loss = float("inf")  # infinity is bad
 
-    for run_num, val_loss in loss_sorted:
-        if run_num not in tarp_dict:
-            continue  # means tarp could not be ran for this model
-        if tarp_dict[run_num] >= 0.99:
-            best_num = run_num
-            best_val_loss = val_loss
-            break  # get first best model with good calibration
-    if best_num is None:
-        best_num = loss_sorted[0][
-            0
-        ]  # get best model but it won't be calibrated, last resort
+        for run_num, val_loss in loss_sorted:
+            if run_num not in tarp_dict:
+                continue  # means tarp could not be ran for this model
+            if tarp_dict[run_num] >= 0.99:
+                best_num = run_num
+                best_val_loss = val_loss
+                break  # get first best model with good calibration
+        if best_num is None:
+            best_num = loss_sorted[0][
+                0
+            ]  # get best model but it won't be calibrated, last resort
 
-    mlflow.log_metric("best model number", best_num)
+        mlflow.log_metric("best model number", best_num)
 
 
 tarp_dict = dict(model_info["tarp_values"])
@@ -450,21 +459,26 @@ with mlflow.start_run(run_name="best_model_evaluation"):
     _, test_set = random_split(dataset, [0.8, 0.2], generator=gen)
     theta_test, x_test = zip(*[test_set[i] for i in range(len(test_set))])
     theta_test = torch.stack(theta_test)
+    # theta_test = (theta_test - theta_low) / (theta_high - theta_low)
     x_test = torch.stack(x_test)
 
     # metrics
     theta_pred = []
-    print("Sampling test observations...")
-    for x_obs in x_test:
-        samples = best_posterior.sample(
-            (1000,),
-            x=x_obs,
-            show_progress_bars=False,
-        )  # 1000 samples from the approximate distribution given an observation
+    # print("Sampling test observations...")
+    # for x_obs in x_test:
+    for x_obs in tqdm(x_test, desc="Sampling test observations"):
+        with torch.no_grad():
+            samples = best_posterior.sample(
+                (1000,),
+                x=x_obs,
+                show_progress_bars=False,
+            )  # 1000 samples from the approximate distribution given an observation
 
-        theta_pred.append(
-            samples.mean(dim=0)
-        )  # average (mean here) of the 1000 samples appended to prediction list
+            theta_pred.append(
+                samples.mean(dim=0).cpu()
+            )  # average (mean here) of the 1000 samples appended to prediction list
+
+            torch.cuda.empty_cache()
 
     theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
     theta_test_cpu = theta_test.cpu()
@@ -504,15 +518,19 @@ with mlflow.start_run(run_name="best_model_evaluation"):
         ("mid", mid_index, "green"),
         ("high", high_index, "blue"),
     ]:
-        samples = best_posterior.sample(
-            (5000,), x=x_test[index], show_progress_bars=False
-        ).cpu()
-        scenario_samples[name] = (
-            samples,
-            index,
-            color,
-            theta_test[index].cpu().numpy(),
-        )  # avoid resampling later
+        with torch.no_grad():
+            samples = best_posterior.sample(
+                (5000,),
+                x=x_test[index],
+                show_progress_bars=False,
+            ).cpu()
+            scenario_samples[name] = (
+                samples,
+                index,
+                color,
+                theta_test[index].cpu().numpy(),
+            )  # avoid resampling later
+        torch.cuda.empty_cache()
 
         x_z = samples.mean(dim=0).numpy()  # mean of distribution
         lower = samples.quantile(0.16, dim=0).numpy()  # -1sigma from distribution
