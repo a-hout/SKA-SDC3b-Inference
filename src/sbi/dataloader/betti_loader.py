@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from sklearn.preprocessing import RobustScaler
 from torch.utils.data.dataset import Dataset
 
 
@@ -11,11 +12,28 @@ class BettiDataset(Dataset):
         self.params = np.load(
             memmap_path + "sbi2_y.npy",
         ).astype(np.float32)
-        self.observables = np.load(
+        raw_observables = np.load(
             memmap_path + "sbi2_betti_1000h.npy",
         ).astype(np.float32)
-        self.transform = transform  # no transform for now.
-        self.target_transform = target_transform
+
+        # inbuilt robust scaler (testing for now)
+        if transform:
+            original_shape = raw_observables.shape
+            num_samples = original_shape[0]
+
+            flattened_obs = raw_observables.reshape(
+                num_samples, -1
+            )  # 2d for scikit-learn
+
+            self.scaler = RobustScaler()
+            scaled_flattened = self.scaler.fit_transform(flattened_obs)
+
+            self.observables = scaled_flattened.reshape(
+                original_shape
+            )  # back to original shape
+        else:
+            self.observables = raw_observables
+            self.scaler = None
 
     def __len__(self):
         return len(self.params)
@@ -23,13 +41,6 @@ class BettiDataset(Dataset):
     def __getitem__(self, idx):
         param = self.params[idx]
         obs = self.observables[idx]
-        """
-        if self.transform:
-            obs = self.transform(obs)
-        if self.target_transform:
-            param = self.target_transform(param)
-        """
-
         random_noise = np.random.randint(
             0, obs.shape[0]
         )  # get index of random noise realisation (between 0 and 21)
@@ -47,19 +58,24 @@ class BettiDataset(Dataset):
 if __name__ == "__main__":
     dataset = BettiDataset("datasets/betti/")
     theta, obs = dataset[:]
+    _, obs = dataset[0]
     print("theta and obs shape:", theta.shape, obs.shape)  # here expect
     N, N_noise, N_freqs = obs.shape[0], obs.shape[1], obs.shape[2]
     dim_data = obs.shape[3:]
-    dim_out = theta.shape[2]
+    dim_out = theta.shape[0]
     print("N", N)
     print("N_noise", N_noise)
     print("N_freqs", N_freqs)
     print("dim_data", dim_data)
     print("dim_out", dim_out)
 
-    print("low: ", theta.min(dim=0).values.detach().clone())
-    print("high: ", theta.max(dim=0).values.detach().clone())
+    true_thetas = torch.tensor(dataset.params[:, 0, :], device=dataset.device)
+    print("True global theta shape:", true_thetas.shape)  # Should be (15951, 3)
 
-    print(
-        (theta[0] == theta[0, 0]).all()
-    )  # we check if all theta are similar for the rows
+    print("True global theta shape:", true_thetas.shape)  # Should be (15951, 3)
+
+    theta_low = true_thetas.min(dim=0).values.detach().clone()
+    theta_high = true_thetas.max(dim=0).values.detach().clone()
+
+    print("Global low: ", theta_low)
+    print("Global high: ", theta_high)
