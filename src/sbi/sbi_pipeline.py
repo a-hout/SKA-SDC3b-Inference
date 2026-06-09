@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import torch
-from compressor import betti_compressor, ps2d_compressor
+from compressor import betti_compressor, joint_ps2d_betti_compressor, ps2d_compressor
 from dataloader import betti_loader, joint_ps2d_betti_loader, ps2d_loader
 from mlflowadapter import MLflowAdapter
 from sbi.analysis import pairplot
@@ -184,6 +184,12 @@ def get_compressor(data_type, summary_dim):
             return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
         case "betti":
             return betti_compressor.BettiCompressor(summary_dim=summary_dim)
+        case "ps2d+betti":
+            return joint_ps2d_betti_compressor.JointPS2DBettiCompressor(
+                ps2d_compressor.PS2DCompressor(summary_dim=summary_dim),
+                betti_compressor.BettiCompressor(summary_dim=summary_dim),
+                summary_dim=summary_dim,
+            )
         # case other:
         # pass  # do later for wst and for combinations
 
@@ -210,22 +216,26 @@ if BEST_PARAMS is None:
         model,
         num_transforms,
         hidden_features,
+        num_bins,
+        learning_rate,
     ) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
-        [16],  # 4 too small, 8 may be interesting but already 2 many h-params
+        [3, 16, 32],  # 3 (to narrow to 3 redshift ranges)
         [
             "nsf",
         ],  # nsf may be slower and more prone to overfitting but could provide better results
         [8],  # num transforms for control flow of model
         [128],  # how big the hidden layers are (width of flow)
+        [10, 32],
+        [5e-4, 1e-4],  # learning rate
     ):
         combination_val_losses = []
         combination_best = {}  # this is the best fold for a given gridsearch combination
         with mlflow.start_run(
-            run_name=f"{model}_sd{summary_dim}_nt{num_transforms}_hf{hidden_features}"
+            run_name=f"{model}_sd{summary_dim}_nbins{num_bins}_lr{learning_rate}"
         ):
             cv = KFold(n_splits=3, shuffle=True, random_state=26)
             for fold, (train_index, test_index) in enumerate(
-                cv.split(range(len(range(1000))))  # dataset)))
+                cv.split(range(len(dataset)))
             ):
                 with mlflow.start_run(run_name=f"fold_{fold + 1}", nested=True):
                     tracker = MLflowAdapter(mlflow)
@@ -237,6 +247,8 @@ if BEST_PARAMS is None:
                             "model": model,
                             "num_transforms": num_transforms,
                             "hidden_features": hidden_features,
+                            "num_bins": num_bins,
+                            "learning_rate": learning_rate,
                         }
                     )
 
@@ -256,11 +268,12 @@ if BEST_PARAMS is None:
 
                     neural_posterior = posterior_nn(
                         model=model,
-                        # embedding_net=get_compressor(data_type, summary_dim),
-                        z_score_x="none",
+                        embedding_net=get_compressor(data_type, summary_dim),
+                        # z_score_x="none",
                         # z_score_theta="independent",
                         hidden_features=hidden_features,
                         num_transforms=num_transforms,
+                        num_bins=num_bins,
                     )
 
                     trainer = NPE(
@@ -275,6 +288,7 @@ if BEST_PARAMS is None:
                     ).train(
                         training_batch_size=512,
                         show_train_summary=True,
+                        learning_rate=learning_rate,
                     )
 
                     posterior = trainer.build_posterior(density_estimator)
@@ -344,136 +358,137 @@ model_info = {
 }
 
 with mlflow.start_run(run_name="Best model run"):
-    # for i in range(30):
-    i = 0
-    try:
-        print("making model directory...")
-        os.mkdir(f"models/sbi/{data_type}/trial-{i + 1}/")
-    except OSError:
-        print("directory already exists.")
-
-    model_info["number"].append(i + 1)
-    gen = torch.manual_seed(i + 1)
-
-    with mlflow.start_run(run_name=f"number_{i + 1}", nested=True):
-        tracker = MLflowAdapter(mlflow)
-
-        mlflow.log_params(
-            {
-                "number": i + 1,
-                "summary_dim": summary_dim,
-                "model": model,
-                "num_transforms": num_transforms,
-                "hidden_features": hidden_features,
-            }
-        )
-
-        train_set, test_set = random_split(dataset, [0.8, 0.2], generator=gen)
-
-        theta_train, x_train = zip(*[train_set[j] for j in range(len(train_set))])
-        theta_train = torch.stack(theta_train)
-        # theta_train = (theta_train - theta_low) / (theta_high - theta_low + 1e-8)
-        x_train = torch.stack(x_train)
-
-        theta_test, x_test = zip(*[test_set[j] for j in range(len(test_set))])
-        theta_test = torch.stack(theta_test)
-        # theta_test = (theta_test - theta_low) / (theta_high - theta_low + 1e-8)
-        x_test = torch.stack(x_test)
-
-        neural_posterior = posterior_nn(
-            model=model,
-            # embedding_net=get_compressor(data_type, summary_dim),
-            z_score_x="none",
-            hidden_features=hidden_features,
-            num_transforms=num_transforms,
-        )
-
-        trainer = NPE(
-            density_estimator=neural_posterior,
-            prior=prior,
-            device=device,
-            tracker=tracker,  # built in by sbi for the tracker with adapter
-        )
-
-        density_estimator = trainer.append_simulations(theta_train, x_train).train(
-            training_batch_size=512,
-            show_train_summary=True,
-        )
-
-        posterior = trainer.build_posterior(density_estimator)
-
-        val_loss = trainer._summary["best_validation_loss"][0]
-        model_info["val_loss_values"].append((i + 1, val_loss))
-        mlflow.log_metric("val_loss", float(val_loss))
-
-        # tarp
-        def timeout_handler(signum, frame):
-            """
-            we need to kill the TARPing if it's >10 minutes (bad luck due to bad posterior/prior sampling)
-            """
-            raise TimeoutError("TARP timed out")
-
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(600)  # 10 minutes
-
+    for i in range(30):
         try:
-            num_tarp_samples = 500
-            tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+            print("making model directory...")
+            os.mkdir(f"models/sbi/{data_type}/trial-{i + 1}/")
+        except OSError:
+            print("directory already exists.")
 
-            prior_samples = theta_test[tarp_index]  # ground truth theta
-            prior_predictives = x_test[tarp_index]  # corresponding observations
+        model_info["number"].append(i + 1)
+        gen = torch.manual_seed(i + 1)
 
-            ecp, alpha = run_tarp(
-                prior_samples,
-                prior_predictives,
-                posterior,
-                references=None,
-                num_posterior_samples=1000,
-                use_batched_sampling=True,
+        with mlflow.start_run(run_name=f"number_{i + 1}", nested=True):
+            tracker = MLflowAdapter(mlflow)
+
+            mlflow.log_params(
+                {
+                    "number": i + 1,
+                    "summary_dim": summary_dim,
+                    "model": model,
+                    "num_transforms": num_transforms,
+                    "hidden_features": hidden_features,
+                }
             )
 
-            atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
-            signal.alarm(0)
-            model_info["tarp_values"].append((i + 1, ks_pval))
-            model_info["tarp_atc_values"].append((i + 1, atc))
-            tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
-            tarp_fig.savefig(f"models/sbi/{data_type}/trial-{i + 1}/tarp_plot.png")
-        except TimeoutError:
-            exit(0)  # continue  # go to the next run
+            train_set, test_set = random_split(dataset, [0.8, 0.2], generator=gen)
 
-        mlflow.log_metrics(
-            {
-                "tarp_pval": float(ks_pval),
-                "tarp_atc": float(
-                    atc
-                ),  # not used in the scoring but can be interesting to observe
-            }
-        )
+            theta_train, x_train = zip(*[train_set[j] for j in range(len(train_set))])
+            theta_train = torch.stack(theta_train)
+            # theta_train = (theta_train - theta_low) / (theta_high - theta_low + 1e-8)
+            x_train = torch.stack(x_train)
 
-        tracker.add_figure("tarp_plot", tarp_fig)
+            theta_test, x_test = zip(*[test_set[j] for j in range(len(test_set))])
+            theta_test = torch.stack(theta_test)
+            # theta_test = (theta_test - theta_low) / (theta_high - theta_low + 1e-8)
+            x_test = torch.stack(x_test)
 
-        model_info["density_estimators"].append((i + 1, density_estimator))
-        model_info["posteriors"].append((i + 1, posterior))
+            neural_posterior = posterior_nn(
+                model=model,
+                embedding_net=get_compressor(data_type, summary_dim),
+                # z_score_x="none",
+                hidden_features=hidden_features,
+                num_transforms=num_transforms,
+            )
 
-    # best model is first model that is also well calbirated
-    loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
-    tarp_dict = dict(model_info["tarp_values"])  # this way we have {number: ks_pval}
-    best_num = None
-    best_val_loss = float("inf")  # infinity is bad
+            trainer = NPE(
+                density_estimator=neural_posterior,
+                prior=prior,
+                device=device,
+                tracker=tracker,  # built in by sbi for the tracker with adapter
+            )
 
-    for run_num, val_loss in loss_sorted:
-        if run_num not in tarp_dict:
-            continue  # means tarp could not be ran for this model
-        if tarp_dict[run_num] >= 0.99:
-            best_num = run_num
-            best_val_loss = val_loss
-            break  # get first best model with good calibration
-    if best_num is None:
-        best_num = loss_sorted[0][
-            0
-        ]  # get best model but it won't be calibrated, last resort
+            density_estimator = trainer.append_simulations(theta_train, x_train).train(
+                training_batch_size=512,
+                show_train_summary=True,
+            )
 
-    mlflow.log_metric("best model number", best_num)
+            posterior = trainer.build_posterior(density_estimator)
+
+            val_loss = trainer._summary["best_validation_loss"][0]
+            model_info["val_loss_values"].append((i + 1, val_loss))
+            mlflow.log_metric("val_loss", float(val_loss))
+
+            # tarp
+            def timeout_handler(signum, frame):
+                """
+                we need to kill the TARPing if it's >10 minutes (bad luck due to bad posterior/prior sampling)
+                """
+                raise TimeoutError("TARP timed out")
+
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(600)  # 10 minutes
+
+            try:
+                num_tarp_samples = 500
+                tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+
+                prior_samples = theta_test[tarp_index]  # ground truth theta
+                prior_predictives = x_test[tarp_index]  # corresponding observations
+
+                ecp, alpha = run_tarp(
+                    prior_samples,
+                    prior_predictives,
+                    posterior,
+                    references=None,
+                    num_posterior_samples=1000,
+                    use_batched_sampling=True,
+                )
+
+                atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+                signal.alarm(0)
+                model_info["tarp_values"].append((i + 1, ks_pval))
+                model_info["tarp_atc_values"].append((i + 1, atc))
+                tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
+                tarp_fig.savefig(f"models/sbi/{data_type}/trial-{i + 1}/tarp_plot.png")
+            except TimeoutError:
+                exit(0)  # continue  # go to the next run
+
+            mlflow.log_metrics(
+                {
+                    "tarp_pval": float(ks_pval),
+                    "tarp_atc": float(
+                        atc
+                    ),  # not used in the scoring but can be interesting to observe
+                }
+            )
+
+            tracker.add_figure("tarp_plot", tarp_fig)
+
+            model_info["density_estimators"].append((i + 1, density_estimator))
+            model_info["posteriors"].append((i + 1, posterior))
+
+        # best model is first model that is also well calbirated
+        loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
+        tarp_dict = dict(
+            model_info["tarp_values"]
+        )  # this way we have {number: ks_pval}
+        best_num = None
+        best_val_loss = float("inf")  # infinity is bad
+
+        for run_num, val_loss in loss_sorted:
+            if run_num not in tarp_dict:
+                continue  # means tarp could not be ran for this model
+            if tarp_dict[run_num] >= 0.99:
+                best_num = run_num
+                best_val_loss = val_loss
+                break  # get first best model with good calibration
+        if best_num is None:
+            best_num = loss_sorted[0][
+                0
+            ]  # get best model but it won't be calibrated, last resort
+
+        mlflow.log_metric("best model number", best_num)
 
 
 tarp_dict = dict(model_info["tarp_values"])

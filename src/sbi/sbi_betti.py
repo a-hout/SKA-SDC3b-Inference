@@ -22,12 +22,13 @@ from scipy.stats import gaussian_kde
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
 from torch.utils.data.dataset import Subset
+from tqdm import tqdm
 
 mlflow.set_experiment("sbi_betti")
 mlflow.end_run()
 
 device = (
-    "cuda"
+    "cuda:2"
     if torch.cuda.is_available()
     else "mps"
     if torch.mps.is_available()
@@ -62,10 +63,10 @@ for (
 ) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
     [16],  # 4 too small, 8 may be interesting but already 2 many h-params
     [
-        "maf",
+        "nsf"
     ],  # nsf may be slower and more prone to overfitting but could provide better results
-    [4],  # num transforms for control flow of model
-    [64],  # how big the hidden layers are (width of flow)
+    [8],  # num transforms for control flow of model
+    [128],  # how big the hidden layers are (width of flow)
 ):
     combination_val_losses = []
     combination_best = {}  # this is the best fold for a given gridsearch combination
@@ -124,8 +125,8 @@ for (
                 )
 
                 posterior = trainer.build_posterior(
-                    density_estimator
-                )  # , sample_with="mcmc")  # otherwise betti posterior will sample outside prior
+                    density_estimator,  # sample_with="mcmc"
+                )  # otherwise betti posterior will sample outside prior
 
                 val_loss = trainer._summary["best_validation_loss"][0]
                 mlflow.log_metric("val_loss", val_loss)
@@ -183,17 +184,17 @@ with mlflow.start_run(run_name="best_model_eval"):
 
     posterior = cv_data["sbi_posterior"]
     theta_pred = []
-    print("Sampling test observations...")
-    for x_obs in x_test:
-        samples = posterior.sample(
-            (1000,),
-            x=x_obs,
-            show_progress_bars=False,
-        )  # 1000 samples from the approximate distribution given an observation
+    # print("Sampling test observations...")
+    for x_obs in tqdm(x_test, desc="Sampling test observations"):
+        with torch.no_grad():
+            samples = posterior.sample(
+                (500,), x=x_obs, show_progress_bars=False, reject_outside_prior=False
+            )  # 500 samples from the approximate distribution given an observation
 
-        theta_pred.append(
-            samples.mean(dim=0)
-        )  # average (mean here) of the 1000 samples appended to prediction list
+            theta_pred.append(
+                samples.mean(dim=0).cpu()
+            )  # average (mean here) of the 1000 samples appended to prediction list
+            torch.cuda.empty_cache()
 
     theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
     theta_test_cpu = theta_test.cpu()
@@ -230,9 +231,15 @@ with mlflow.start_run(run_name="best_model_eval"):
         ("mid", mid_index, "green"),
         ("high", high_index, "blue"),
     ]:
-        samples = posterior.sample(
-            (5000,), x=x_test[index], show_progress_bars=False
-        ).cpu()
+        print(name)
+        with torch.no_grad():
+            samples = posterior.sample(
+                (2500,),
+                x=x_test[index],
+                show_progress_bars=False,
+                reject_outside_prior=False,
+            ).cpu()
+        torch.cuda.empty_cache()
 
         x_z = samples.mean(dim=0).numpy()  # mean of distribution
         lower = samples.quantile(0.16, dim=0).numpy()  # -1sigma from distribution
@@ -289,23 +296,31 @@ with mlflow.start_run(run_name="best_model_eval"):
     fig.savefig("models/sbi/betti/reionization_history.png")
     tracker.add_figure("reionization_history", fig)
 
-    # tarp
-    num_tarp_samples = 500
+    # tarp, impossible at the moment
+    """
+    num_tarp_samples = 200
     tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
 
     prior_samples = theta_test[tarp_index]  # ground truth theta
     prior_predictives = x_test[tarp_index]  # corresponding observations
 
-    ecp, alpha = run_tarp(
-        prior_samples,
-        prior_predictives,
-        posterior,
-        references=None,
-        num_posterior_samples=1000,
-        use_batched_sampling=True,
-    )
+    with torch.no_grad():
+        ecp, alpha = run_tarp(
+            prior_samples,
+            prior_predictives,
+            posterior,
+            references=None,
+            num_posterior_samples=1000,
+            use_batched_sampling=True,
+        )
 
-    atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+        ecp_cpu = ecp.cpu()
+        alpha_cpu = alpha.cpu()
+
+    torch.cuda.empty_cache()
+
+    atc, ks_pval = check_tarp(ecp_cpu, alpha_cpu)
+    """
 
     with open("models/sbi/betti/evaluation.json", "w") as f:
         json.dump(
@@ -322,25 +337,25 @@ with mlflow.start_run(run_name="best_model_eval"):
                     for i in range(3)
                 },
                 "val_loss": float(cv_data["metrics"][3]),
-                "tarp_atc": float(atc),
-                "tarp_ks_pval": float(ks_pval),
+                # "tarp_atc": float(atc),
+                # "tarp_ks_pval": float(ks_pval),
                 "best_params": cv_data["best_params"],
             },
             f,
             indent=4,
         )
 
-    tarp_fig, ax = plot_tarp(ecp.cpu(), alpha.cpu())
+    # tarp_fig, ax = plot_tarp(ecp.cpu(), alpha.cpu())
 
-    tarp_fig.savefig("models/sbi/betti/tarp_plot.png")  # also available via mlflow
+    # tarp_fig.savefig("models/sbi/betti/tarp_plot.png")  # also available via mlflow
 
     mlflow.log_metrics(
         {
             "r2": float(r2),
             "rmse": float(rmse),
             "mae": float(mae),
-            "tarp_atc": float(atc),
-            "tarp_ks_pval": float(ks_pval),
+            # "tarp_atc": float(atc),
+            # "tarp_ks_pval": float(ks_pval),
         }
     )
 
@@ -356,7 +371,7 @@ with mlflow.start_run(run_name="best_model_eval"):
 
     # log figures
 
-    tracker.add_figure("tarp_plot", tarp_fig)
+    # tracker.add_figure("tarp_plot", tarp_fig)
     for name in ["low", "mid", "high"]:
         tracker.add_figure(f"pairplot_{name}_xHI", pairplot_figs[name])
 

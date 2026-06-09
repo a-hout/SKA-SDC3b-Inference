@@ -29,4 +29,4 @@ class JointPS2DBettiDataset(Dataset):
         _, betti_obs = self.betti_dataset[betti_index]
         obs = torch.concatenate((torch.flatten(ps2d_obs), torch.flatten(betti_obs)))
         # obs is of shape (489) because (3, 10, 10) -> 300 and betti (3, 3, 21) -> 189
-        return (ps2d_theta, obs)  # round to 5 like when making the valid pairs?
+        return (ps2d_theta, obs)
