@@ -140,10 +140,8 @@ match data_type:
                 valid_pairs.append((index, betti_dict[row_tuple]))
 
         ps2d_dataset = ps2d_loader.PS2DDataset(
-            MEMMAP_PATH_PS2D,
-            device=device,
-            transform=lambda x: torch.log10(x + 0.04),
-        )  # because obs min at -0.0395)
+            MEMMAP_PATH_PS2D, device=device
+        )  # , transform=lambda x: torch.log10(x + 0.04),)  # because obs min at -0.0395)
         betti_dataset = betti_loader.BettiDataset(MEMMAP_PATH_BETTI, device=device)
 
         dataset = joint_ps2d_betti_loader.JointPS2DBettiDataset(
