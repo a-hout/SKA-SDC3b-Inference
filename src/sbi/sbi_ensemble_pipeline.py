@@ -200,7 +200,9 @@ prior = BoxUniform(low=low, high=high, device=device)
 ##################
 # 2. 30-run
 ##################
-summary_dim, model, num_transforms, hidden_features = BEST_PARAMS.values()
+summary_dim, model, num_transforms, hidden_features, num_bins, learning_rate = (
+    BEST_PARAMS.values()
+)
 global_gen = torch.manual_seed(26)
 train_val_dataset, global_test_dataset = random_split(
     dataset, [0.8, 0.2], generator=global_gen
@@ -236,6 +238,8 @@ with mlflow.start_run(run_name="Best ensemble model run"):
                     "model": model,
                     "num_transforms": num_transforms,
                     "hidden_features": hidden_features,
+                    "num_bins": num_bins,
+                    "learning_rate": learning_rate,
                 }
             )
 
@@ -259,6 +263,7 @@ with mlflow.start_run(run_name="Best ensemble model run"):
                 # z_score_x="none",
                 hidden_features=hidden_features,
                 num_transforms=num_transforms,
+                num_bins=num_bins,
             )
 
             trainer = NPE(
@@ -271,6 +276,7 @@ with mlflow.start_run(run_name="Best ensemble model run"):
             density_estimator = trainer.append_simulations(theta_train, x_train).train(
                 training_batch_size=512,
                 show_train_summary=True,
+                learning_rate=learning_rate,
             )
 
             posterior = trainer.build_posterior(density_estimator)

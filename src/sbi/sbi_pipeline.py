@@ -51,14 +51,13 @@ from scipy.stats import gaussian_kde
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
 from torch.utils.data.dataset import Subset, random_split
-from tqdm import tqdm
 
 ##################
 # 1. inits
 ##################
 
 device = (
-    "cuda:3"
+    "cuda:2"
     if torch.cuda.is_available()
     else "mps"
     if torch.mps.is_available()
@@ -140,7 +139,11 @@ match data_type:
             if row_tuple in betti_dict:
                 valid_pairs.append((index, betti_dict[row_tuple]))
 
-        ps2d_dataset = ps2d_loader.PS2DDataset(MEMMAP_PATH_PS2D, device=device)
+        ps2d_dataset = ps2d_loader.PS2DDataset(
+            MEMMAP_PATH_PS2D,
+            device=device,
+            transform=lambda x: torch.log10(x + 0.04),
+        )  # because obs min at -0.0395)
         betti_dataset = betti_loader.BettiDataset(MEMMAP_PATH_BETTI, device=device)
 
         dataset = joint_ps2d_betti_loader.JointPS2DBettiDataset(
@@ -314,6 +317,8 @@ if BEST_PARAMS is None:
                     "model": model,
                     "num_transforms": num_transforms,
                     "hidden_features": hidden_features,
+                    "num_bins": num_bins,
+                    "learning_rate": learning_rate,
                 }
             )
         if mean_val_loss < global_best_mean_val_loss:
@@ -327,6 +332,8 @@ if BEST_PARAMS is None:
                 "model": model,
                 "num_transforms": num_transforms,
                 "hidden_features": hidden_features,
+                "num_bins": num_bins,
+                "learning_rate": learning_rate,
             }
     try:
         print("making data type directory...")
@@ -346,8 +353,14 @@ if BEST_PARAMS is None:
 ##################
 # 3. 30-run
 ##################
-summary_dim, model, num_transforms, hidden_features = BEST_PARAMS.values()
-# dataset = Subset(dataset, range(1000))  # for testing
+summary_dim, model, num_transforms, hidden_features, num_bins, learning_rate = (
+    BEST_PARAMS.values()
+)
+global_gen = torch.manual_seed(26)
+train_val_dataset, global_test_dataset = random_split(
+    dataset, [0.8, 0.2], generator=global_gen
+)
+# train_val_dataset = Subset(train_val_dataset, range(200))  # for testing
 model_info = {
     "number": [],
     "val_loss_values": [],
@@ -378,10 +391,14 @@ with mlflow.start_run(run_name="Best model run"):
                     "model": model,
                     "num_transforms": num_transforms,
                     "hidden_features": hidden_features,
+                    "num_bins": num_bins,
+                    "learning_rate": learning_rate,
                 }
             )
 
-            train_set, test_set = random_split(dataset, [0.8, 0.2], generator=gen)
+            train_set, test_set = random_split(
+                train_val_dataset, [0.8, 0.2], generator=gen
+            )
 
             theta_train, x_train = zip(*[train_set[j] for j in range(len(train_set))])
             theta_train = torch.stack(theta_train)
@@ -399,6 +416,7 @@ with mlflow.start_run(run_name="Best model run"):
                 # z_score_x="none",
                 hidden_features=hidden_features,
                 num_transforms=num_transforms,
+                num_bins=num_bins,
             )
 
             trainer = NPE(
@@ -411,6 +429,7 @@ with mlflow.start_run(run_name="Best model run"):
             density_estimator = trainer.append_simulations(theta_train, x_train).train(
                 training_batch_size=512,
                 show_train_summary=True,
+                learning_rate=learning_rate,
             )
 
             posterior = trainer.build_posterior(density_estimator)
@@ -468,27 +487,25 @@ with mlflow.start_run(run_name="Best model run"):
             model_info["density_estimators"].append((i + 1, density_estimator))
             model_info["posteriors"].append((i + 1, posterior))
 
-        # best model is first model that is also well calbirated
-        loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
-        tarp_dict = dict(
-            model_info["tarp_values"]
-        )  # this way we have {number: ks_pval}
-        best_num = None
-        best_val_loss = float("inf")  # infinity is bad
+    # best model is first model that is also well calbirated
+    loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
+    tarp_dict = dict(model_info["tarp_values"])  # this way we have {number: ks_pval}
+    best_num = None
+    best_val_loss = float("inf")  # infinity is bad
 
-        for run_num, val_loss in loss_sorted:
-            if run_num not in tarp_dict:
-                continue  # means tarp could not be ran for this model
-            if tarp_dict[run_num] >= 0.99:
-                best_num = run_num
-                best_val_loss = val_loss
-                break  # get first best model with good calibration
-        if best_num is None:
-            best_num = loss_sorted[0][
-                0
-            ]  # get best model but it won't be calibrated, last resort
+    for run_num, val_loss in loss_sorted:
+        if run_num not in tarp_dict:
+            continue  # means tarp could not be ran for this model
+        if tarp_dict[run_num] >= 0.99:
+            best_num = run_num
+            best_val_loss = val_loss
+            break  # get first best model with good calibration
+    if best_num is None:
+        best_num = loss_sorted[0][
+            0
+        ]  # get best model but it won't be calibrated, last resort
 
-        mlflow.log_metric("best model number", best_num)
+    mlflow.log_metric("best model number", best_num)
 
 
 tarp_dict = dict(model_info["tarp_values"])
@@ -512,18 +529,18 @@ torch.save(best_posterior, f"models/sbi/{data_type}/best_posterior.pt")
 best_model_info = {}
 with mlflow.start_run(run_name="best_model_evaluation"):
     tracker = MLflowAdapter(mlflow)
-    gen = torch.manual_seed(best_num)
+    gen = torch.manual_seed(26)
 
     _, test_set = random_split(dataset, [0.8, 0.2], generator=gen)
     theta_test, x_test = zip(*[test_set[i] for i in range(len(test_set))])
     theta_test = torch.stack(theta_test)
-    # theta_test = (theta_test - theta_low) / (theta_high - theta_low)
     x_test = torch.stack(x_test)
 
     # metrics
     theta_pred = []
     # print("Sampling test observations...")
     # for x_obs in x_test:
+    """
     for x_obs in tqdm(x_test, desc="Sampling test observations"):
         with torch.no_grad():
             samples = best_posterior.sample(
@@ -537,8 +554,15 @@ with mlflow.start_run(run_name="best_model_evaluation"):
             )  # average (mean here) of the 1000 samples appended to prediction list
 
             torch.cuda.empty_cache()
+    """
+    with torch.no_grad():
+        samples = best_posterior.sample_batched(
+            (1000,),
+            x=x_test,
+            show_progress_bars=True,
+        )  # 1000 samples from the approximate distribution given an observation (1000, N, parameter dimneison)
 
-    theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
+    theta_pred = samples.mean(dim=0).cpu()  # back to cpu to convert to numpy
     theta_test_cpu = theta_test.cpu()
 
     best_model_info["metrics_per_bin"] = []
