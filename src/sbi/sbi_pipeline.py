@@ -28,6 +28,7 @@ P(x | z) plot with the three scenarios (3 plots) (and comparison with ground tru
 ##################################################################################################################
 # 0. imports
 ##################
+import copy
 import json
 import os
 import signal
@@ -38,7 +39,12 @@ import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import torch
-from compressor import betti_compressor, joint_ps2d_betti_compressor, ps2d_compressor
+from compressor import (
+    betti_compressor,
+    joint_ps2d_betti_compressor,
+    ps2d_compressor,
+    ps2d_resnet,
+)
 from dataloader import betti_loader, joint_ps2d_betti_loader, ps2d_loader
 from mlflowadapter import MLflowAdapter
 from sbi.analysis import pairplot
@@ -50,6 +56,7 @@ from sbi.utils import BoxUniform
 from scipy.stats import gaussian_kde
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
+from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.dataset import Subset, random_split
 
 ##################
@@ -179,10 +186,11 @@ match data_type:
         exit(1)
 
 
-def get_compressor(data_type, summary_dim):
+def get_compressor(data_type, summary_dim, model=None):
     match data_type:
         case "ps2d":
-            return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
+            ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
+            # return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
         case "betti":
             return betti_compressor.BettiCompressor(summary_dim=summary_dim)
         case "ps2d+betti":
@@ -358,7 +366,7 @@ global_gen = torch.manual_seed(26)
 train_val_dataset, global_test_dataset = random_split(
     dataset, [0.8, 0.2], generator=global_gen
 )
-# train_val_dataset = Subset(train_val_dataset, range(200))  # for testing
+train_val_dataset = Subset(train_val_dataset, range(10000))  # for testing
 model_info = {
     "number": [],
     "val_loss_values": [],
@@ -400,22 +408,116 @@ with mlflow.start_run(run_name="Best model run"):
 
             theta_train, x_train = zip(*[train_set[j] for j in range(len(train_set))])
             theta_train = torch.stack(theta_train)
-            # theta_train = (theta_train - theta_low) / (theta_high - theta_low + 1e-8)
             x_train = torch.stack(x_train)
 
             theta_test, x_test = zip(*[test_set[j] for j in range(len(test_set))])
             theta_test = torch.stack(theta_test)
-            # theta_test = (theta_test - theta_low) / (theta_high - theta_low + 1e-8)
             x_test = torch.stack(x_test)
 
-            neural_posterior = posterior_nn(
-                model=model,
-                embedding_net=get_compressor(data_type, summary_dim),
-                # z_score_x="none",
-                hidden_features=hidden_features,
-                num_transforms=num_transforms,
-                num_bins=num_bins,
-            )
+            ### train a resnet model for the trial
+            if data_type == "ps2d":
+                print("starting training for resnet!!!")
+                resnet = ps2d_resnet.PS2DResNet()
+                batch_size = 512
+                max_epochs = 100
+
+                criterion = (
+                    torch.nn.MSELoss()
+                )  # mean square error loss for the regression task
+                optimizer = torch.optim.Adam(resnet.parameters(), lr=1e-3)
+
+                resnet.to(device)
+
+                train_dataset = TensorDataset(x_train, theta_train)
+                val_dataset = TensorDataset(
+                    x_test, theta_test
+                )  # test is acting as val here in this case
+                train_laoder = DataLoader(
+                    train_dataset, batch_size=batch_size, shuffle=True
+                )  # shuffling
+                val_loader = DataLoader(
+                    val_dataset, batch_size=batch_size, shuffle=False
+                )  # no shuffling
+
+                best_val_loss = float("inf")
+                best_weights = None
+                epochs_without_better_loss = (
+                    0  # after 10 epochs with no improvement, we stop
+                )
+
+                for epoch in range(max_epochs):
+                    print(f"epoch number {epoch}/{max_epochs}")
+                    resnet.train()  # train mode on (this means dropout is active) -> dropout should NOT be active after training when evaluating since the normalizing flow wants something it can go back and forth on
+                    train_loss = 0.0
+
+                    for x_batch, theta_batch in train_laoder:
+                        x_batch, theta_batch = (
+                            x_batch.to(device),
+                            theta_batch.to(device),
+                        )
+
+                        optimizer.zero_grad()  # get rid of old gradients
+                        predictions = resnet(x_batch)
+                        loss = criterion(
+                            predictions, theta_batch
+                        )  # get loss of pred vs real
+                        loss.backward()  # backward propagation, according to the loss metric
+                        optimizer.step()  # this will update weigths, according to the optimizer
+
+                        train_loss += loss.item() * x_batch.size(0)  # batch loss
+
+                    train_loss /= len(train_laoder.dataset)  # total loss of all batches
+
+                    resnet.eval()  # evaluation mode so we can do validation loss
+                    val_loss = 0.0
+                    with torch.no_grad():
+                        for x_batch, theta_batch in val_loader:
+                            x_batch, theta_batch = (
+                                x_batch.to(device),
+                                theta_batch.to(device),
+                            )
+
+                            predictions = resnet(x_batch)
+                            loss = criterion(predictions, theta_batch)
+                            val_loss += loss.item() * x_batch.size(0)
+
+                    val_loss /= len(val_loader.dataset)
+
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_weights = copy.deepcopy(
+                            resnet.state_dict()
+                        )  # deepcopy since this will change every epoch
+                        epochs_without_better_loss = 0
+                    else:
+                        epochs_without_better_loss += 1
+
+                    if epochs_without_better_loss >= 10:
+                        break  # early stopping
+
+                resnet.load_state_dict(best_weights)
+                resnet.eval()  # set to ecval mode so dropout is off when used by sbi
+                for param in resnet.parameters():
+                    param.requires_grad = False  # freeze weigts
+
+                print("finished resnet training")
+                neural_posterior = posterior_nn(
+                    model=model,
+                    embedding_net=resnet,
+                    # z_score_x="none",
+                    hidden_features=hidden_features,
+                    num_transforms=num_transforms,
+                    num_bins=num_bins,
+                )
+            else:
+                neural_posterior = posterior_nn(
+                    model=model,
+                    embedding_net=get_compressor(data_type, summary_dim),
+                    # z_score_x="none",
+                    hidden_features=hidden_features,
+                    num_transforms=num_transforms,
+                    num_bins=num_bins,
+                )
 
             trainer = NPE(
                 density_estimator=neural_posterior,
