@@ -27,7 +27,7 @@ class PS2DResNet(nn.Module):
         self.resnet.fc = nn.Linear(in_features, 64)
         self.end_layer = nn.Sequential(
             nn.Dropout(0.1),
-            nn.GELU(),  # mentioned in the ps2d embedding as to why
+            nn.ReLU(),  # Gelu not needed here
             nn.Linear(64, 3),  # down to 3, for the three redshift bins
         )
 

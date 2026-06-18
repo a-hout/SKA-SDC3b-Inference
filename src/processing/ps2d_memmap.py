@@ -31,7 +31,7 @@ for id in range(159449 + 1):
         theta_memmap[id] = theta_i[:, -1]  # mean_xHI as theta
         x_i = []
         for hz in hz_ranges:
-            x_i.append(np.loadtxt(base_input + "0" + "_" + hz + ".txt"))
+            x_i.append(np.loadtxt(base_input + str(id) + "_" + hz + ".txt"))
         x_memmap[id] = np.array(x_i)
     except:
         sum_files_not_loaded += 1

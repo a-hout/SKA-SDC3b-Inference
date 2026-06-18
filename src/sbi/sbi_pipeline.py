@@ -58,6 +58,7 @@ from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_err
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.dataset import Subset, random_split
+from tqdm import tqdm
 
 ##################
 # 1. inits
@@ -189,7 +190,7 @@ match data_type:
 def get_compressor(data_type, summary_dim, model=None):
     match data_type:
         case "ps2d":
-            ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
+            return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
             # return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
         case "betti":
             return betti_compressor.BettiCompressor(summary_dim=summary_dim)
@@ -366,7 +367,7 @@ global_gen = torch.manual_seed(26)
 train_val_dataset, global_test_dataset = random_split(
     dataset, [0.8, 0.2], generator=global_gen
 )
-train_val_dataset = Subset(train_val_dataset, range(10000))  # for testing
+# train_val_dataset = Subset(train_val_dataset, range(10000))  # for testing
 model_info = {
     "number": [],
     "val_loss_values": [],
@@ -413,6 +414,13 @@ with mlflow.start_run(run_name="Best model run"):
             theta_test, x_test = zip(*[test_set[j] for j in range(len(test_set))])
             theta_test = torch.stack(theta_test)
             x_test = torch.stack(x_test)
+
+            #### testing, wwill probably delete later
+            # x_mean = x_train.mean(dim=(0, 2, 3), keepdim=True)
+            # x_std = x_train.std(dim=(0, 2, 3), keepdim=True) + 1e-8
+
+            # x_train = (x_train - x_mean) / x_std
+            # x_test = (x_test - x_mean) / x_std
 
             ### train a resnet model for the trial
             if data_type == "ps2d":
@@ -492,10 +500,11 @@ with mlflow.start_run(run_name="Best model run"):
                     else:
                         epochs_without_better_loss += 1
 
-                    if epochs_without_better_loss >= 10:
+                    if epochs_without_better_loss >= 15:
                         break  # early stopping
 
                 resnet.load_state_dict(best_weights)
+                print("val loss: ", best_val_loss)
                 resnet.eval()  # set to ecval mode so dropout is off when used by sbi
                 for param in resnet.parameters():
                     param.requires_grad = False  # freeze weigts
@@ -640,7 +649,7 @@ with mlflow.start_run(run_name="best_model_evaluation"):
     theta_pred = []
     # print("Sampling test observations...")
     # for x_obs in x_test:
-    """
+
     for x_obs in tqdm(x_test, desc="Sampling test observations"):
         with torch.no_grad():
             samples = best_posterior.sample(
@@ -661,8 +670,8 @@ with mlflow.start_run(run_name="best_model_evaluation"):
             x=x_test,
             show_progress_bars=True,
         )  # 1000 samples from the approximate distribution given an observation (1000, N, parameter dimneison)
-
-    theta_pred = samples.mean(dim=0).cpu()  # back to cpu to convert to numpy
+    """
+    theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
     theta_test_cpu = theta_test.cpu()
 
     best_model_info["metrics_per_bin"] = []
@@ -788,6 +797,7 @@ with mlflow.start_run(run_name="best_model_evaluation"):
     axes_pxz[0].set_ylabel("P(x|z)")
     fig_pxz.savefig(f"models/sbi/{data_type}/pxz_plot.png")
 
+    """
     # tarp plot already done, just retrieve it from the best model since it's saved
     best_tarp_fig_path = f"models/sbi/{data_type}/trial-{best_num}/tarp_plot.png"
     if os.path.exists(best_tarp_fig_path):
@@ -795,6 +805,27 @@ with mlflow.start_run(run_name="best_model_evaluation"):
         tarp_reload_ax.imshow(plt.imread(best_tarp_fig_path))
         tarp_reload_ax.axis("off")
         tracker.add_figure("tarp_plot", tarp_reload_fig)
+    """
+    # tarp plot redo, since new test data
+    num_tarp_samples = 500
+    tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+
+    prior_samples = theta_test[tarp_index]  # ground truth theta
+    prior_predictives = x_test[tarp_index]  # corresponding observations
+
+    ecp, alpha = run_tarp(
+        prior_samples,
+        prior_predictives,
+        best_posterior,
+        references=None,
+        num_posterior_samples=1000,
+        use_batched_sampling=True,
+    )
+
+    atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+    tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
+    tarp_fig.savefig(f"models/sbi/{data_type}/tarp_plot.png")
+    tracker.add_figure("tarp_plot", tarp_fig)
 
     # save evaluation
     with open(f"models/sbi/{data_type}/evaluation.json", "w") as f:
