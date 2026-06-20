@@ -367,7 +367,9 @@ global_gen = torch.manual_seed(26)
 train_val_dataset, global_test_dataset = random_split(
     dataset, [0.8, 0.2], generator=global_gen
 )
-# train_val_dataset = Subset(train_val_dataset, range(10000))  # for testing
+train_val_dataset = Subset(
+    train_val_dataset, range(int(len(dataset) / 15))
+)  # for testing, a fifteenth of the dataset size
 model_info = {
     "number": [],
     "val_loss_values": [],
@@ -375,15 +377,23 @@ model_info = {
     "tarp_atc_values": [],
     "posteriors": [],
     "density_estimators": [],
+    "tarp_curves": [],
 }
 
+# tarp_fig, tarp_axs = plt.subplots(6,5) #1 plot per one of the 30 models
+tarp_fig, tarp_axs = plt.subplots(1, 5, figsize=(20, 4))  # testing 5
+
 with mlflow.start_run(run_name="Best model run"):
-    for i in range(30):
+    # for i in range(30):
+    # for i, ax in enumerate(tarp_axs.ravel()):
+    for i in range(1):  # testing 5
+        """
         try:
             print("making model directory...")
             os.mkdir(f"models/sbi/{data_type}/trial-{i + 1}/")
         except OSError:
             print("directory already exists.")
+        """
 
         model_info["number"].append(i + 1)
         gen = torch.manual_seed(i + 1)
@@ -414,13 +424,6 @@ with mlflow.start_run(run_name="Best model run"):
             theta_test, x_test = zip(*[test_set[j] for j in range(len(test_set))])
             theta_test = torch.stack(theta_test)
             x_test = torch.stack(x_test)
-
-            #### testing, wwill probably delete later
-            # x_mean = x_train.mean(dim=(0, 2, 3), keepdim=True)
-            # x_std = x_train.std(dim=(0, 2, 3), keepdim=True) + 1e-8
-
-            # x_train = (x_train - x_mean) / x_std
-            # x_test = (x_test - x_mean) / x_std
 
             ### train a resnet model for the trial
             if data_type == "ps2d":
@@ -554,65 +557,104 @@ with mlflow.start_run(run_name="Best model run"):
                 """
                 raise TimeoutError("TARP timed out")
 
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(600)  # 10 minutes
+            # 20 realisations
+            mean_pval_tarp = 0
+            successful_tarps = 0
+            current_model_curves = []  # for the 20 tarps
+            for k in range(20):
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(600)  # 10 minutes
 
-            try:
-                num_tarp_samples = 500
-                tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+                try:
+                    num_tarp_samples = 500
+                    tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
 
-                prior_samples = theta_test[tarp_index]  # ground truth theta
-                prior_predictives = x_test[tarp_index]  # corresponding observations
+                    prior_samples = theta_test[tarp_index]  # ground truth theta
+                    prior_predictives = x_test[tarp_index]  # corresponding observations
 
-                ecp, alpha = run_tarp(
-                    prior_samples,
-                    prior_predictives,
-                    posterior,
-                    references=None,
-                    num_posterior_samples=1000,
-                    use_batched_sampling=True,
-                )
+                    ecp, alpha = run_tarp(
+                        prior_samples,
+                        prior_predictives,
+                        posterior,
+                        references=None,
+                        num_posterior_samples=1000,
+                        use_batched_sampling=True,
+                    )
 
-                atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
-                signal.alarm(0)
-                model_info["tarp_values"].append((i + 1, ks_pval))
-                model_info["tarp_atc_values"].append((i + 1, atc))
-                tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
-                tarp_fig.savefig(f"models/sbi/{data_type}/trial-{i + 1}/tarp_plot.png")
-            except TimeoutError:
-                exit(0)  # continue  # go to the next run
+                    atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+                    signal.alarm(0)
 
-            mlflow.log_metrics(
-                {
-                    "tarp_pval": float(ks_pval),
-                    "tarp_atc": float(
-                        atc
-                    ),  # not used in the scoring but can be interesting to observe
-                }
-            )
+                    mean_pval_tarp += ks_pval
+                    successful_tarps += 1
 
-            tracker.add_figure("tarp_plot", tarp_fig)
+                    current_model_curves.append(
+                        (ecp.cpu().numpy(), alpha.cpu().numpy())
+                    )
+                    """
+                    model_info["tarp_values"].append((i + 1, ks_pval))
+                    model_info["tarp_atc_values"].append((i + 1, atc))
+                    tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
+                    tarp_fig.savefig(f"models/sbi/{data_type}/trial-{i + 1}/tarp_plot.png")
+                    """
+                except TimeoutError:
+                    print(
+                        f"could not complte tarp realisation for model {i + 1}, skipping to next one..."
+                    )
+                    continue  # go to the next run
+
+            if successful_tarps > 0:
+                mean_pval_tarp /= successful_tarps
+            else:
+                mean_pval_tarp = 0.0  # very bad!
+
+            model_info["tarp_values"].append((i + 1, mean_pval_tarp))
+            # model_info["tarp_atc_values"].append(())
+            model_info["tarp_curves"].append((i + 1, current_model_curves))
+
+            mlflow.log_metrics({"tarp_pval_mean": float(mean_pval_tarp)})
 
             model_info["density_estimators"].append((i + 1, density_estimator))
             model_info["posteriors"].append((i + 1, posterior))
 
-    # best model is first model that is also well calbirated
-    loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
-    tarp_dict = dict(model_info["tarp_values"])  # this way we have {number: ks_pval}
-    best_num = None
-    best_val_loss = float("inf")  # infinity is bad
+    # best model is model with best mean tarp
+    tarp_sorted = sorted(model_info["tarp_values"], key=lambda x: x[1], reverse=True)
+    loss_dict = dict(model_info["val_loss_values"])
+    best_num = tarp_sorted[0][0]
+    best_val_loss = loss_dict[best_num]
 
-    for run_num, val_loss in loss_sorted:
-        if run_num not in tarp_dict:
-            continue  # means tarp could not be ran for this model
-        if tarp_dict[run_num] >= 0.99:
-            best_num = run_num
-            best_val_loss = val_loss
-            break  # get first best model with good calibration
-    if best_num is None:
-        best_num = loss_sorted[0][
-            0
-        ]  # get best model but it won't be calibrated, last resort
+    print(f"best model -> trial {best_num}")
+
+    # drawing on tarp_fig the 30 models tarps and their 20 realisations, in green the best model
+    curves_dict = dict(model_info["tarp_curves"])
+    pval_dict = dict(model_info["tarp_values"])
+
+    for index, ax in enumerate(tarp_axs.ravel()):
+        run_num = index + 1
+
+        if run_num not in curves_dict:
+            ax.axis("off")  # remove trial which have no complete realisations
+            continue
+
+        line_color = "green" if run_num == best_num else "red"
+
+        ax.plot(
+            [0, 1], [0, 1], color="black", linestyle="--", alpha=0.8, zorder=3
+        )  # diagonal reference line in background
+
+        for ecp_vals, alpha_vals in curves_dict[run_num]:
+            ax.plot(
+                alpha_vals, ecp_vals, color=line_color, alpha=0.15, zorder=2
+            )  # plotting all realsiations
+
+        ax.set_title(f"trial {run_num}: p={pval_dict[run_num]:.3f}")
+        ax.set_xlabel("Credibility level")
+        if (
+            index == 0 or index % 5 == 0
+        ):  # only show y label on leftmost plots, thanks chatgpt
+            ax.set_ylabel("Expected coverage probability")
+
+    tarp_fig.savefig(f"models/sbi/{data_type}/tarp_plot.png")
+    mlflow.log_artifact(f"models/sbi/{data_type}/tarp_plot.png")
 
     mlflow.log_metric("best model number", best_num)
 
@@ -636,20 +678,17 @@ torch.save(best_posterior, f"models/sbi/{data_type}/best_posterior.pt")
 # 5. eval
 ##################
 best_model_info = {}
-with mlflow.start_run(run_name="best_model_evaluation"):
+with mlflow.start_run(run_name="Best model evaluation"):
     tracker = MLflowAdapter(mlflow)
-    gen = torch.manual_seed(26)
 
-    _, test_set = random_split(dataset, [0.8, 0.2], generator=gen)
-    theta_test, x_test = zip(*[test_set[i] for i in range(len(test_set))])
+    theta_test, x_test = zip(
+        *[global_test_dataset[i] for i in range(len(global_test_dataset))]
+    )
     theta_test = torch.stack(theta_test)
     x_test = torch.stack(x_test)
 
     # metrics
     theta_pred = []
-    # print("Sampling test observations...")
-    # for x_obs in x_test:
-
     for x_obs in tqdm(x_test, desc="Sampling test observations"):
         with torch.no_grad():
             samples = best_posterior.sample(
@@ -663,14 +702,7 @@ with mlflow.start_run(run_name="best_model_evaluation"):
             )  # average (mean here) of the 1000 samples appended to prediction list
 
             torch.cuda.empty_cache()
-    """
-    with torch.no_grad():
-        samples = best_posterior.sample_batched(
-            (1000,),
-            x=x_test,
-            show_progress_bars=True,
-        )  # 1000 samples from the approximate distribution given an observation (1000, N, parameter dimneison)
-    """
+
     theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
     theta_test_cpu = theta_test.cpu()
 
@@ -690,11 +722,22 @@ with mlflow.start_run(run_name="best_model_evaluation"):
     mae = mean_absolute_error(theta_test_cpu, theta_pred)
     best_model_info["metrics"] = (r2, rmse, mae, best_val_loss)
 
-    # pairplots reionisation history
+    # scenarios (low = fast, high = slow reionization)
     theta_mean = theta_test.cpu().mean(dim=1)  # mean across bins for each observation
-    low_index = theta_mean.argmin()
-    mid_index = (theta_mean - theta_mean.mean()).abs().argmin()
-    high_index = theta_mean.argmax()
+    low_target = torch.quantile(theta_mean, 0.16)  # 10th percentile, not extreme at 0
+    mid_target = torch.median(theta_mean)  # 50th percentile
+    high_target = torch.quantile(
+        theta_mean, 0.84
+    )  # 90th percentile, not extreme at 100
+
+    # get the indices of the 3 sceanrios
+    low_index = (theta_mean - low_target).abs().argmin().item()
+    mid_index = (theta_mean - mid_target).abs().argmin().item()
+    high_index = (theta_mean - high_target).abs().argmin().item()
+
+    print(
+        f"Indices of scenarios:\n\tLow: {theta_mean[low_index]:.3f}\n\tmid: {theta_mean[mid_index]:.3f}\n\thigh: {theta_mean[high_index]:.3f}"
+    )
 
     z_centers = [158.45, 173.45, 188.45]
     r_range = ["151.0-165.9", "166.0-180.9", "181.0-195.9"]
@@ -743,7 +786,7 @@ with mlflow.start_run(run_name="best_model_evaluation"):
         axes.plot(
             z_centers,
             true_theta,
-            "--",
+            "x--",
             color=color,
             markersize=10,
             alpha=0.7,
@@ -797,35 +840,63 @@ with mlflow.start_run(run_name="best_model_evaluation"):
     axes_pxz[0].set_ylabel("P(x|z)")
     fig_pxz.savefig(f"models/sbi/{data_type}/pxz_plot.png")
 
-    """
-    # tarp plot already done, just retrieve it from the best model since it's saved
-    best_tarp_fig_path = f"models/sbi/{data_type}/trial-{best_num}/tarp_plot.png"
-    if os.path.exists(best_tarp_fig_path):
-        tarp_reload_fig, tarp_reload_ax = plt.subplots()
-        tarp_reload_ax.imshow(plt.imread(best_tarp_fig_path))
-        tarp_reload_ax.axis("off")
-        tracker.add_figure("tarp_plot", tarp_reload_fig)
-    """
     # tarp plot redo, since new test data
-    num_tarp_samples = 500
-    tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Global TARP timed out")
 
-    prior_samples = theta_test[tarp_index]  # ground truth theta
-    prior_predictives = x_test[tarp_index]  # corresponding observations
+    global_tarp_curves = []
+    mean_global_pval = 0.0
+    successful_global_tarps = 0
 
-    ecp, alpha = run_tarp(
-        prior_samples,
-        prior_predictives,
-        best_posterior,
-        references=None,
-        num_posterior_samples=1000,
-        use_batched_sampling=True,
+    for k in range(20):
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(600)  # 10 minutes
+
+        try:
+            num_tarp_samples = 500
+            tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+
+            prior_samples = theta_test[tarp_index]
+            prior_predictives = x_test[tarp_index]
+
+            ecp, alpha = run_tarp(
+                prior_samples,
+                prior_predictives,
+                best_posterior,
+                references=None,
+                num_posterior_samples=1000,
+                use_batched_sampling=True,
+            )
+
+            atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+            signal.alarm(0)
+
+            mean_global_pval += ks_pval
+            successful_global_tarps += 1
+            global_tarp_curves.append((ecp.cpu().numpy(), alpha.cpu().numpy()))
+
+        except TimeoutError:
+            print(f"Global TARP realization {k + 1} timed out, skipping...")
+            continue
+
+    if successful_global_tarps > 0:
+        mean_global_pval /= successful_global_tarps
+
+    # get final global TARP plot
+    tarp_eval_fig, tarp_eval_ax = plt.subplots(figsize=(6, 6))
+    tarp_eval_ax.plot(
+        [0, 1], [0, 1], color="black", linestyle="--", alpha=0.8, label="Ideal"
     )
 
-    atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
-    tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
-    tarp_fig.savefig(f"models/sbi/{data_type}/tarp_plot.png")
-    tracker.add_figure("tarp_plot", tarp_fig)
+    for ecp_vals, alpha_vals in global_tarp_curves:
+        tarp_eval_ax.plot(alpha_vals, ecp_vals, color="purple", alpha=0.15, linewidth=1)
+
+    tarp_eval_ax.set_title(f"Global test set TARP: p = {mean_global_pval:.3f})")
+    tarp_eval_ax.set_xlabel("Credibility level")
+    tarp_eval_ax.set_ylabel("Expected coverage probability")
+
+    tarp_eval_fig.savefig(f"models/sbi/{data_type}/global_tarp_plot.png")
+    tracker.add_figure("global_tarp_plot", tarp_eval_fig)
 
     # save evaluation
     with open(f"models/sbi/{data_type}/evaluation.json", "w") as f:
@@ -842,9 +913,8 @@ with mlflow.start_run(run_name="best_model_evaluation"):
                     }
                     for i in range(3)
                 },
-                "tarp_atc": float(tarp_dict_atc.get(best_num, float("nan"))),
-                "tarp_ks_pval": float(tarp_dict.get(best_num, float("nan"))),
-                "val_loss": float(best_model_info["metrics"][3]),
+                "global_tarp_ks_pval": float(mean_global_pval),
+                "val_loss": float(best_val_loss),
             },
             f,
             indent=4,
@@ -855,8 +925,7 @@ with mlflow.start_run(run_name="best_model_evaluation"):
             "r2": float(r2),
             "rmse": float(rmse),
             "mae": float(mae),
-            "tarp_atc": float(tarp_dict_atc.get(best_num, float("nan"))),
-            "tarp_ks_pval": float(tarp_dict.get(best_num, float("nan"))),
+            "global_tarp_ks_pval": float(mean_global_pval),
         }
     )
     # log per-bin metrics
