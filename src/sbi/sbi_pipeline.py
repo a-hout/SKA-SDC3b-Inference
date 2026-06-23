@@ -65,7 +65,7 @@ from tqdm import tqdm
 ##################
 
 device = (
-    "cuda:2"
+    "cuda:3"
     if torch.cuda.is_available()
     else "mps"
     if torch.mps.is_available()
@@ -367,9 +367,7 @@ global_gen = torch.manual_seed(26)
 train_val_dataset, global_test_dataset = random_split(
     dataset, [0.8, 0.2], generator=global_gen
 )
-train_val_dataset = Subset(
-    train_val_dataset, range(int(len(dataset) / 15))
-)  # for testing, a fifteenth of the dataset size
+# train_val_dataset = Subset(train_val_dataset, range(int(len(dataset) / 15)))  # for testing, a fifteenth of the dataset size
 model_info = {
     "number": [],
     "val_loss_values": [],
@@ -380,21 +378,13 @@ model_info = {
     "tarp_curves": [],
 }
 
-# tarp_fig, tarp_axs = plt.subplots(6,5) #1 plot per one of the 30 models
-tarp_fig, tarp_axs = plt.subplots(1, 5, figsize=(20, 4))  # testing 5
+tarp_fig, tarp_axs = plt.subplots(
+    6, 5, figsize=(20, 4)
+)  # 1 plot per one of the 30 models
+# tarp_fig, tarp_axs = plt.subplots(1, 5, figsize=(20, 4))  # testing 5
 
 with mlflow.start_run(run_name="Best model run"):
-    # for i in range(30):
-    # for i, ax in enumerate(tarp_axs.ravel()):
-    for i in range(1):  # testing 5
-        """
-        try:
-            print("making model directory...")
-            os.mkdir(f"models/sbi/{data_type}/trial-{i + 1}/")
-        except OSError:
-            print("directory already exists.")
-        """
-
+    for i in range(30):  # testing with 5, producition with 30
         model_info["number"].append(i + 1)
         gen = torch.manual_seed(i + 1)
 
@@ -590,12 +580,7 @@ with mlflow.start_run(run_name="Best model run"):
                     current_model_curves.append(
                         (ecp.cpu().numpy(), alpha.cpu().numpy())
                     )
-                    """
-                    model_info["tarp_values"].append((i + 1, ks_pval))
-                    model_info["tarp_atc_values"].append((i + 1, atc))
-                    tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
-                    tarp_fig.savefig(f"models/sbi/{data_type}/trial-{i + 1}/tarp_plot.png")
-                    """
+
                 except TimeoutError:
                     print(
                         f"could not complte tarp realisation for model {i + 1}, skipping to next one..."
@@ -608,7 +593,6 @@ with mlflow.start_run(run_name="Best model run"):
                 mean_pval_tarp = 0.0  # very bad!
 
             model_info["tarp_values"].append((i + 1, mean_pval_tarp))
-            # model_info["tarp_atc_values"].append(())
             model_info["tarp_curves"].append((i + 1, current_model_curves))
 
             mlflow.log_metrics({"tarp_pval_mean": float(mean_pval_tarp)})
@@ -891,7 +875,7 @@ with mlflow.start_run(run_name="Best model evaluation"):
     for ecp_vals, alpha_vals in global_tarp_curves:
         tarp_eval_ax.plot(alpha_vals, ecp_vals, color="purple", alpha=0.15, linewidth=1)
 
-    tarp_eval_ax.set_title(f"Global test set TARP: p = {mean_global_pval:.3f})")
+    tarp_eval_ax.set_title(f"Global test set TARP: p = {mean_global_pval:.6f})")
     tarp_eval_ax.set_xlabel("Credibility level")
     tarp_eval_ax.set_ylabel("Expected coverage probability")
 
