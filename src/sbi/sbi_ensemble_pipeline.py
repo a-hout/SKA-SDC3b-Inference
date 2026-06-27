@@ -26,21 +26,24 @@ P(x | z) plot with the three scenarios (3 plots) (and comparison with ground tru
 ##################################################################################################################
 # 0. imports
 ##################
+import copy
 import json
-import os
 import signal
 import sys
-from itertools import product
 
 import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import torch
-from compressor import betti_compressor, joint_ps2d_betti_compressor, ps2d_compressor
-from dataloader import betti_loader, joint_ps2d_betti_loader, ps2d_loader
+from compressor import (
+    betti_compressor,
+    joint_ps2d_betti_compressor,
+    ps2d_compressor,
+    ps2d_resnet,
+)
+from dataloader import data_type_loader, joint_ps2d_betti_loader
 from mlflowadapter import MLflowAdapter
 from sbi.analysis import pairplot
-from sbi.analysis.plot import plot_tarp
 from sbi.diagnostics import check_tarp, run_tarp
 from sbi.inference import NPE, EnsemblePosterior
 from sbi.neural_nets import posterior_nn
@@ -48,6 +51,7 @@ from sbi.utils import BoxUniform
 from scipy.stats import gaussian_kde
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
+from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.dataset import Subset, random_split
 from tqdm import tqdm
 
@@ -81,121 +85,50 @@ except (IndexError, FileNotFoundError):
     )
     exit(1)
 
+dataset = None
+
 match data_type:
     case "ps2d":
-        mlflow.set_experiment("Ensemble SBI PS2D")
-        # embedding = ps2d_compressor.PS2DCompressor(3)
-
-        dataset = ps2d_loader.PS2DDataset(
-            "datasets/pk_128_train_250325_noise/memmap/", device=device
-        )
-
-        theta, _ = dataset[:]
-        low = theta.min(dim=0).values.detach().clone().to(device)
-        high = theta.max(dim=0).values.detach().clone().to(device)
+        mlflow.set_experiment("SBI Ensemble PS2D")
 
     case "betti":
-        mlflow.set_experiment("Ensemble SBI Betti")
-        # embedding = betti_compressor.BettiCompressor(3)
-
-        dataset = betti_loader.BettiDataset("datasets/betti/", device=device)
-
-        theta = torch.tensor(dataset.params[:, 0, :], device=dataset.device)
-
-        low = theta.min(dim=0).values.detach().clone()
-        high = theta.max(dim=0).values.detach().clone()
-
-    case "wst":
-        mlflow.set_experiment("Ensemble SBI WST")
-
-        pass
+        mlflow.set_experiment("SBI Ensemble Betti")
 
     case "ps2d+betti" | "betti+ps2d":  # combine both ps2d and betti
         data_type = "ps2d+betti"
-        mlflow.set_experiment("SBI PS2D & Betti")
-
-        # we need to see the indices for which ps2d and betti have matching thetas
-        MEMMAP_PATH_PS2D = "datasets/pk_128_train_250325_noise/memmap/"
-        MEMMAP_PATH_BETTI = "datasets/betti/"
-        betti_theta = np.load(MEMMAP_PATH_BETTI + "sbi2_y.npy").astype(np.float32)
-        ps2d_theta = np.memmap(
-            MEMMAP_PATH_PS2D + "theta_memmap.npy",
-            shape=(159449, 3),
-            mode="r",
-            dtype=np.float32,
-        )
-
-        PRECISION_DECIMALS = 5  # if we don't round, then only a few matching thetas but we also dont want to round too much
-        betti_rounded = np.round(betti_theta, decimals=PRECISION_DECIMALS)
-        ps2d_rounded = np.round(ps2d_theta, decimals=PRECISION_DECIMALS)
-
-        betti_dict = {
-            tuple(map(float, row)): index
-            for index, row in enumerate(betti_rounded[:, 0, :])
-        }  # because shape (15951, 20, 3)
-
-        valid_pairs = []
-
-        for index, row in enumerate(ps2d_rounded):
-            row_tuple = tuple(map(float, row.ravel()))
-            if row_tuple in betti_dict:
-                valid_pairs.append((index, betti_dict[row_tuple]))
-
-        ps2d_dataset = ps2d_loader.PS2DDataset(MEMMAP_PATH_PS2D, device=device)
-        betti_dataset = betti_loader.BettiDataset(MEMMAP_PATH_BETTI, device=device)
+        mlflow.set_experiment("SBI Ensemble PS2D & Betti")
 
         dataset = joint_ps2d_betti_loader.JointPS2DBettiDataset(
-            ps2d_dataset, betti_dataset, valid_pairs
+            data_type_loader.DataDataset("ps2d", device=device),
+            data_type_loader.DataDataset("betti", device=device),
         )
-
-        theta, _ = ps2d_dataset[:]  # because thetas are from ps2d
-        low = theta.min(dim=0).values.detach().clone().to(device)
-        high = theta.max(dim=0).values.detach().clone().to(device)
-
-    case "ps2d+wst" | "wst+ps2d":  # combine both ps2d and wst
-        data_type = "ps2d+wst"
-        mlflow.set_experiment("Ensemble SBI PS2D & WST")
-        pass
-
-    case "betti+wst" | "wst+betti":  # combine both betti and wst
-        data_type = "betti+wst"
-        mlflow.set_experiment("Ensemble SBI Betti & WST")
-
-        pass
-
-    case (  # combine all data types
-        "ps2d+betti+wst"
-        | "ps2d+wst+betti"
-        | "betti+ps2d+wst"
-        | "betti+wst+ps2d"
-        | "wst+ps2d+betti"
-        | "wst+betti+ps2d"
-    ):
-        data_type = "ps2d+betti+wst"
-        mlflow.set_experiment("SBI PS2D & Betti & WST")
 
     case other:
         print("No such data type or data type combination.")
         exit(1)
 
+if dataset is None:
+    dataset = data_type_loader.DataDataset(data_type, device=device)
 
-def get_compressor(data_type, summary_dim):
+theta = torch.tensor(dataset.params[:, 0, :], device=device)
+low = theta.min(dim=0).values.detach().clone()
+high = theta.max(dim=0).values.detach().clone()
+prior = BoxUniform(low=low, high=high, device=device)
+
+
+def get_compressor(data_type, summary_dim, model=None):
     match data_type:
         case "ps2d":
-            return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
+            return model
         case "betti":
             return betti_compressor.BettiCompressor(summary_dim=summary_dim)
         case "ps2d+betti":
             return joint_ps2d_betti_compressor.JointPS2DBettiCompressor(
-                ps2d_compressor.PS2DCompressor(summary_dim=summary_dim),
+                model,
                 betti_compressor.BettiCompressor(summary_dim=summary_dim),
                 summary_dim=summary_dim,
             )
-        # case other:
-        # pass  # do later for wst and for combinations
 
-
-prior = BoxUniform(low=low, high=high, device=device)
 
 ##################
 # 2. 30-run
@@ -203,11 +136,15 @@ prior = BoxUniform(low=low, high=high, device=device)
 summary_dim, model, num_transforms, hidden_features, num_bins, learning_rate = (
     BEST_PARAMS.values()
 )
-global_gen = torch.manual_seed(26)
+global_gen = torch.manual_seed(831)
+
 train_val_dataset, global_test_dataset = random_split(
-    dataset, [0.8, 0.2], generator=global_gen
+    (Subset(dataset, range(int(len(dataset) / 15)))),
+    [0.8, 0.2],
+    generator=global_gen,
 )
-# train_val_dataset = Subset(train_val_dataset, range(500))  # for testing
+# for testing, a 15th of the dataset size
+
 model_info = {
     "number": [],
     "val_loss_values": [],
@@ -215,16 +152,15 @@ model_info = {
     "tarp_atc_values": [],
     "posteriors": [],
     "density_estimators": [],
+    "tarp_curves": [],
 }
 
-with mlflow.start_run(run_name="Best ensemble model run"):
-    for i in range(30):
-        try:
-            print("making model directory...")
-            os.mkdir(f"models/ensemble-sbi/{data_type}/trial-{i + 1}/")
-        except OSError:
-            print("directory already exists.")
+tarp_fig, tarp_axs = plt.subplots(
+    6, 5, figsize=(20, 28)
+)  # 1 plot per one of the 30 models
 
+with mlflow.start_run(run_name="Best ensemble model run"):
+    for i in range(5):
         model_info["number"].append(i + 1)
         gen = torch.manual_seed(i + 1)
 
@@ -249,18 +185,120 @@ with mlflow.start_run(run_name="Best ensemble model run"):
 
             theta_train, x_train = zip(*[train_set[j] for j in range(len(train_set))])
             theta_train = torch.stack(theta_train)
-            # theta_train = (theta_train - theta_low) / (theta_high - theta_low + 1e-8)
             x_train = torch.stack(x_train)
 
             theta_test, x_test = zip(*[test_set[j] for j in range(len(test_set))])
             theta_test = torch.stack(theta_test)
-            # theta_test = (theta_test - theta_low) / (theta_high - theta_low + 1e-8)
             x_test = torch.stack(x_test)
 
+            embedding = None
+
+            ### train a resnet model for the trial
+            if data_type in ["ps2d", "ps2d+betti"]:
+                print("starting training for resnet!!!")
+                resnet = ps2d_resnet.PS2DResNet()
+
+                batch_size = 512
+                max_epochs = 300
+
+                criterion = (
+                    torch.nn.MSELoss()
+                )  # mean square error loss for the regression task
+                optimizer = torch.optim.Adam(resnet.parameters(), lr=1e-3)
+
+                resnet.to(device)
+
+                if data_type == "ps2d+betti":
+                    x_train_img = x_train[:, :300].view(
+                        -1, 3, 10, 10
+                    )  # fit to number of samples and basic shape
+                    x_test_img = x_test[:, :300].view(
+                        -1, 3, 10, 10
+                    )  # fit to number of samples and basic shape
+                else:
+                    x_train_img = x_train
+                    x_test_img = x_test
+                train_dataset = TensorDataset(x_train_img, theta_train)
+                val_dataset = TensorDataset(
+                    x_test_img, theta_test
+                )  # test is acting as val here in this case
+                train_laoder = DataLoader(
+                    train_dataset, batch_size=batch_size, shuffle=True
+                )  # shuffling
+                val_loader = DataLoader(
+                    val_dataset, batch_size=batch_size, shuffle=False
+                )  # no shuffling
+
+                best_val_loss = float("inf")
+                best_weights = None
+                epochs_without_better_loss = (
+                    0  # after 10 epochs with no improvement, we stop
+                )
+
+                for epoch in range(max_epochs):
+                    print(f"epoch number {epoch}/{max_epochs}")
+                    resnet.train()  # train mode on (this means dropout is active) -> dropout should NOT be active after training when evaluating since the normalizing flow wants something it can go back and forth on
+                    train_loss = 0.0
+
+                    for x_batch, theta_batch in train_laoder:
+                        x_batch, theta_batch = (
+                            x_batch.to(device),
+                            theta_batch.to(device),
+                        )
+
+                        optimizer.zero_grad()  # get rid of old gradients
+                        predictions = resnet(x_batch)
+                        loss = criterion(
+                            predictions, theta_batch
+                        )  # get loss of pred vs real
+                        loss.backward()  # backward propagation, according to the loss metric
+                        optimizer.step()  # this will update weigths, according to the optimizer
+
+                        train_loss += loss.item() * x_batch.size(0)  # batch loss
+
+                    train_loss /= len(train_laoder.dataset)  # total loss of all batches
+
+                    resnet.eval()  # evaluation mode so we can do validation loss
+                    val_loss = 0.0
+                    with torch.no_grad():
+                        for x_batch, theta_batch in val_loader:
+                            x_batch, theta_batch = (
+                                x_batch.to(device),
+                                theta_batch.to(device),
+                            )
+
+                            predictions = resnet(x_batch)
+                            loss = criterion(predictions, theta_batch)
+                            val_loss += loss.item() * x_batch.size(0)
+
+                    val_loss /= len(val_loader.dataset)
+
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_weights = copy.deepcopy(
+                            resnet.state_dict()
+                        )  # deepcopy since this will change every epoch
+                        epochs_without_better_loss = 0
+                    else:
+                        epochs_without_better_loss += 1
+
+                    if epochs_without_better_loss >= 15:
+                        break  # early stopping
+
+                resnet.load_state_dict(best_weights)
+                print("val loss: ", best_val_loss)
+                resnet.eval()  # set to ecval mode so dropout is off when used by sbi
+                for param in resnet.parameters():
+                    param.requires_grad = False  # freeze weigts
+
+                print("finished resnet training")
+                embedding = get_compressor(data_type, summary_dim, model=resnet)
+            if embedding is None:
+                embedding = get_compressor(data_type, summary_dim)
             neural_posterior = posterior_nn(
                 model=model,
-                embedding_net=get_compressor(data_type, summary_dim),
-                # z_score_x="none",
+                embedding_net=embedding,
+                z_score_x="none" if data_type != "betti" else "independent",
                 hidden_features=hidden_features,
                 num_transforms=num_transforms,
                 num_bins=num_bins,
@@ -292,85 +330,106 @@ with mlflow.start_run(run_name="Best ensemble model run"):
                 """
                 raise TimeoutError("TARP timed out")
 
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(600)  # 10 minutes
+            # 20 realisations
+            mean_pval_tarp = 0
+            successful_tarps = 0
+            current_model_curves = []  # for the 20 tarps
+            for k in range(20):
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(600)  # 10 minutes
 
-            try:
-                num_tarp_samples = 500
-                tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+                try:
+                    num_tarp_samples = 500
+                    tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
 
-                prior_samples = theta_test[tarp_index]  # ground truth theta
-                prior_predictives = x_test[tarp_index]  # corresponding observations
+                    prior_samples = theta_test[tarp_index]  # ground truth theta
+                    prior_predictives = x_test[tarp_index]  # corresponding observations
 
-                ecp, alpha = run_tarp(
-                    prior_samples,
-                    prior_predictives,
-                    posterior,
-                    references=None,
-                    num_posterior_samples=1000,
-                    use_batched_sampling=True,
-                )
+                    ecp, alpha = run_tarp(
+                        prior_samples,
+                        prior_predictives,
+                        posterior,
+                        references=None,
+                        num_posterior_samples=1000,
+                        use_batched_sampling=True,
+                    )
 
-                atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
-                signal.alarm(0)
-                model_info["tarp_values"].append((i + 1, ks_pval))
-                model_info["tarp_atc_values"].append((i + 1, atc))
-                tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
-                tarp_fig.savefig(
-                    f"models/ensemble-sbi/{data_type}/trial-{i + 1}/tarp_plot.png"
-                )
-            except TimeoutError:
-                exit(0)  # continue  # go to the next run
+                    atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+                    signal.alarm(0)
 
-            mlflow.log_metrics(
-                {
-                    "tarp_pval": float(ks_pval),
-                    "tarp_atc": float(
-                        atc
-                    ),  # not used in the scoring but can be interesting to observe
-                }
-            )
+                    mean_pval_tarp += ks_pval
+                    successful_tarps += 1
 
-            tracker.add_figure("tarp_plot", tarp_fig)
+                    current_model_curves.append(
+                        (ecp.cpu().numpy(), alpha.cpu().numpy())
+                    )
+
+                except TimeoutError:
+                    print(
+                        f"could not complte tarp realisation for model {i + 1}, skipping to next one..."
+                    )
+                    continue  # go to the next run
+
+            if successful_tarps > 0:
+                mean_pval_tarp /= successful_tarps
+            else:
+                mean_pval_tarp = 0.0  # very bad!
+
+            model_info["tarp_values"].append((i + 1, mean_pval_tarp))
+            model_info["tarp_curves"].append((i + 1, current_model_curves))
+
+            mlflow.log_metrics({"tarp_pval_mean": float(mean_pval_tarp)})
 
             model_info["density_estimators"].append((i + 1, density_estimator))
             model_info["posteriors"].append((i + 1, posterior))
 
     posteriors = dict(model_info["posteriors"])
-    tarp_dict = dict(model_info["tarp_values"])  # this way we have {number: ks_pval}
-
-    loss_sorted = sorted(model_info["val_loss_values"], key=lambda x: x[1])
-
+    # tarp_dict = dict(model_info["tarp_values"])  # this way we have {number: ks_pval}
+    tarp_sorted = sorted(model_info["tarp_values"], key=lambda x: x[1], reverse=True)
     best_posteriors = []
-    selected_runs = set()
-    for k in range(5):  # get 5 best models
-        # best model is first model that is also well calbirated
+    selected_runs = []
 
-        best_num = None
-        best_val_loss = float("inf")  # infinity is bad
-
-        for run_num, val_loss in loss_sorted:
-            if run_num in selected_runs:
-                continue
-            if run_num not in tarp_dict:
-                continue  # means tarp could not be ran for this model
-            if tarp_dict[run_num] >= 0.99:
-                best_num = run_num
-
-                break  # get first best model with good calibration
-        if best_num is None:
-            for run_num, val_loss in loss_sorted:
-                if run_num not in selected_runs:
-                    best_num = run_num
-                    break
-
-        if best_num is not None:
-            best_posteriors.append(posteriors[best_num])
-            selected_runs.add(best_num)
-        else:
+    for run_num, p_val in tarp_sorted:  # get 5 vest calibrated models
+        if len(best_posteriors) >= 5:
             break
+        if run_num in posteriors:
+            best_posteriors.append(posteriors[run_num])
+            selected_runs.append(run_num)
 
-        mlflow.log_metric("best model number", best_num)
+            mlflow.log_metric(f"ensemble_member_{len(best_posteriors)}", run_num)
+    print(f"Selected ensemble trials: {selected_runs}")
+
+    loss_dict = dict(model_info["val_loss_values"])
+    curves_dict = dict(model_info["tarp_curves"])
+    pval_dict = dict(model_info["tarp_values"])
+
+    for index, ax in enumerate(tarp_axs.ravel()):
+        run_num = index + 1
+
+        if run_num not in curves_dict:
+            ax.axis("off")
+            continue
+
+        line_color = "green" if run_num in selected_runs else "red"
+
+        ax.plot([0, 1], [0, 1], color="black", linestyle="--", alpha=0.8, zorder=3)
+
+        for ecp_vals, alpha_vals in curves_dict[run_num]:
+            ax.plot(alpha_vals, ecp_vals, color=line_color, alpha=0.15, zorder=2)
+
+        ax.set_title(f"trial {run_num}: p={pval_dict[run_num]:.3f}")
+
+        ax.set_xlabel("Credibility level")
+        if index == 0 or index % 5 == 0:
+            ax.set_ylabel("Expected coverage probability")
+
+    tarp_fig.savefig(f"models/ensemble-sbi/{data_type}/tarp_plot.png")
+    mlflow.log_artifact(f"models/ensemble-sbi/{data_type}/tarp_plot.png")
+
+    # log primary best tracker (the absolute best model)
+    if selected_runs:
+        best_val_loss = loss_dict[selected_runs[0]]
+        mlflow.log_metric("best model number", selected_runs[0])
 
 
 tarp_dict_atc = dict(model_info["tarp_atc_values"])
@@ -385,9 +444,8 @@ torch.save(best_posterior, f"models/ensemble-sbi/{data_type}/best_posterior.pt")
 # 4. eval
 ##################
 best_model_info = {}
-with mlflow.start_run(run_name="best_model_evaluation"):
+with mlflow.start_run(run_name="Best ensemble model evaluation"):
     tracker = MLflowAdapter(mlflow)
-    gen = torch.manual_seed(26)
 
     theta_test, x_test = zip(
         *[global_test_dataset[i] for i in range(len(global_test_dataset))]
@@ -430,11 +488,22 @@ with mlflow.start_run(run_name="best_model_evaluation"):
     mae = mean_absolute_error(theta_test_cpu, theta_pred)
     best_model_info["metrics"] = (r2, rmse, mae, best_val_loss)
 
-    # pairplots reionisation history
+    # scenarios (low = fast, high = slow reionization)
     theta_mean = theta_test.cpu().mean(dim=1)  # mean across bins for each observation
-    low_index = theta_mean.argmin()
-    mid_index = (theta_mean - theta_mean.mean()).abs().argmin()
-    high_index = theta_mean.argmax()
+    low_target = torch.quantile(theta_mean, 0.16)  # 16th percentile, not extreme at 0
+    mid_target = torch.median(theta_mean)  # 50th percentile
+    high_target = torch.quantile(
+        theta_mean, 0.84
+    )  # 84th percentile, not extreme at 100
+
+    # get the indices of the 3 sceanrios
+    low_index = (theta_mean - low_target).abs().argmin().item()
+    mid_index = (theta_mean - mid_target).abs().argmin().item()
+    high_index = (theta_mean - high_target).abs().argmin().item()
+
+    print(
+        f"Indices of scenarios:\n\tLow: {theta_mean[low_index]:.3f}\n\tmid: {theta_mean[mid_index]:.3f}\n\thigh: {theta_mean[high_index]:.3f}"
+    )
 
     z_centers = [158.45, 173.45, 188.45]
     r_range = ["151.0-165.9", "166.0-180.9", "181.0-195.9"]
@@ -537,26 +606,63 @@ with mlflow.start_run(run_name="best_model_evaluation"):
     axes_pxz[0].set_ylabel("P(x|z)")
     fig_pxz.savefig(f"models/ensemble-sbi/{data_type}/pxz_plot.png")
 
-    # tarp plot redo, since new posterior
-    num_tarp_samples = 500
-    tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+    # tarp plot redo, since new test data
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Global TARP timed out")
 
-    prior_samples = theta_test[tarp_index]  # ground truth theta
-    prior_predictives = x_test[tarp_index]  # corresponding observations
+    global_tarp_curves = []
+    mean_global_pval = 0.0
+    successful_global_tarps = 0
 
-    ecp, alpha = run_tarp(
-        prior_samples,
-        prior_predictives,
-        best_posterior,
-        references=None,
-        num_posterior_samples=1000,
-        use_batched_sampling=True,
+    for k in range(20):
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(600)  # 10 minutes
+
+        try:
+            num_tarp_samples = 500
+            tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+
+            prior_samples = theta_test[tarp_index]
+            prior_predictives = x_test[tarp_index]
+
+            ecp, alpha = run_tarp(
+                prior_samples,
+                prior_predictives,
+                best_posterior,
+                references=None,
+                num_posterior_samples=1000,
+                use_batched_sampling=True,
+            )
+
+            atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+            signal.alarm(0)
+
+            mean_global_pval += ks_pval
+            successful_global_tarps += 1
+            global_tarp_curves.append((ecp.cpu().numpy(), alpha.cpu().numpy()))
+
+        except TimeoutError:
+            print(f"Global TARP realization {k + 1} timed out, skipping...")
+            continue
+
+    if successful_global_tarps > 0:
+        mean_global_pval /= successful_global_tarps
+
+    # get final global TARP plot
+    tarp_eval_fig, tarp_eval_ax = plt.subplots(figsize=(6, 6))
+    tarp_eval_ax.plot(
+        [0, 1], [0, 1], color="black", linestyle="--", alpha=0.8, label="Ideal"
     )
 
-    atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
-    tarp_fig, _ = plot_tarp(ecp.cpu(), alpha.cpu())
-    tarp_fig.savefig(f"models/ensemble-sbi/{data_type}/tarp_plot.png")
-    tracker.add_figure("tarp_plot", tarp_fig)
+    for ecp_vals, alpha_vals in global_tarp_curves:
+        tarp_eval_ax.plot(alpha_vals, ecp_vals, color="purple", alpha=0.15, linewidth=1)
+
+    tarp_eval_ax.set_title(f"Global test set TARP: p = {mean_global_pval:.6f})")
+    tarp_eval_ax.set_xlabel("Credibility level")
+    tarp_eval_ax.set_ylabel("Expected coverage probability")
+
+    tarp_eval_fig.savefig(f"models/ensemble-sbi/{data_type}/global_tarp_plot.png")
+    tracker.add_figure("global_tarp_plot", tarp_eval_fig)
 
     # save evaluation
     with open(f"models/ensemble-sbi/{data_type}/evaluation.json", "w") as f:
@@ -573,9 +679,8 @@ with mlflow.start_run(run_name="best_model_evaluation"):
                     }
                     for i in range(3)
                 },
-                "tarp_atc": float(tarp_dict_atc.get(best_num, float("nan"))),
-                "tarp_ks_pval": float(tarp_dict.get(best_num, float("nan"))),
-                "val_loss": float(best_model_info["metrics"][3]),
+                "global_tarp_ks_pval": float(mean_global_pval),
+                "val_loss": float(best_val_loss),
             },
             f,
             indent=4,
@@ -586,8 +691,7 @@ with mlflow.start_run(run_name="best_model_evaluation"):
             "r2": float(r2),
             "rmse": float(rmse),
             "mae": float(mae),
-            "tarp_atc": float(tarp_dict_atc.get(best_num, float("nan"))),
-            "tarp_ks_pval": float(tarp_dict.get(best_num, float("nan"))),
+            "global_tarp_ks_pval": float(mean_global_pval),
         }
     )
     # log per-bin metrics

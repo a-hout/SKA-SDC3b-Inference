@@ -8,18 +8,23 @@ class PS2DDataset(Dataset):
         self, memmap_path, transform=None, target_transform=None, device="cpu"
     ):
         self.device = device
+        self.params = np.load("betti/sbi2_y.npy").astype(np.float32)
+        """
         self.params = np.memmap(
             memmap_path + "theta_memmap.npy",
             shape=(159449, 3),
             mode="r",
             dtype=np.float32,
         )
+
         self.observables = np.memmap(
             memmap_path + "x_memmap.npy",
             shape=(159449, 3, 10, 10),
             mode="r",
             dtype=np.float32,
         )
+        """
+        self.observables = np.load("ps2d/sbi2_ps2d_1000h.npy")
         self.transform = transform  # log10
         self.target_transform = target_transform
 
@@ -48,6 +53,10 @@ class PS2DDataset(Dataset):
 
 
 if __name__ == "__main__":
+    """
     dataset = PS2DDataset("datasets/pk_128_train_250325_noise/memmap/")
     theta, x = dataset[:]
     print(x.min())  # min at -0.0395
+    """
+    ps2d = np.load("datasets/ps2d/sbi2_ps2d_1000h.npy")
+    print(ps2d.shape)

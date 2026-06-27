@@ -1,16 +1,16 @@
 ##################################################################################################################
 
 """
-Pipeline for generic data types (ps2d, betti, wst) training, with the aid of mlflow.
+Pipeline for generic data types (ps2d, betti) training, with the aid of mlflow.
 
 1. Init of parameters and data
 
 2. Gridsearch for best hyperparameters concerning the SBI model.
 
 3. Train again 30 times with best parameters with different seeds to validate stability
-train -> get val-loss -> run tarp (with 10 min timeout) and get calibration results
+train -> get val-loss -> run tarp (with 10 min timeout and 20 realizations) and get calibration results
 
-4. at the end, get the best model with the best calibration (most negative val-loss and tarp closest to 1)
+4. at the end, get the best model with the best calibration (best mean p-val of TARP)
 
 5. Full evaluation with metrics, overal and per z_x
 R2
@@ -22,7 +22,7 @@ pairplots
 
 reionisation history with the three scenarios + the actual mean ground truth for comparison
 
-P(x | z) plot with the three scenarios (3 plots) (and comparison with ground truth?)
+P(x | z) plot with the three scenarios (3 plots)
 """
 
 ##################################################################################################################
@@ -42,10 +42,12 @@ import torch
 from compressor import (
     betti_compressor,
     joint_ps2d_betti_compressor,
-    ps2d_compressor,
     ps2d_resnet,
 )
-from dataloader import betti_loader, joint_ps2d_betti_loader, ps2d_loader
+from dataloader import (
+    data_type_loader,
+    joint_ps2d_betti_loader,
+)
 from mlflowadapter import MLflowAdapter
 from sbi.analysis import pairplot
 from sbi.analysis.plot import plot_tarp
@@ -87,124 +89,50 @@ try:
 except (IndexError, FileNotFoundError):
     BEST_PARAMS = None
 
+dataset = None
+
 match data_type:
     case "ps2d":
         mlflow.set_experiment("SBI PS2D")
-        embedding = ps2d_compressor.PS2DCompressor(3)
-
-        dataset = ps2d_loader.PS2DDataset(
-            "datasets/pk_128_train_250325_noise/memmap/", device=device
-        )
-
-        theta, _ = dataset[:]
-        low = theta.min(dim=0).values.detach().clone().to(device)
-        high = theta.max(dim=0).values.detach().clone().to(device)
 
     case "betti":
         mlflow.set_experiment("SBI Betti")
-        embedding = betti_compressor.BettiCompressor(3)
-
-        dataset = betti_loader.BettiDataset("datasets/betti/", device=device)
-
-        theta = torch.tensor(dataset.params[:, 0, :], device=dataset.device)
-
-        low = theta.min(dim=0).values.detach().clone()
-        high = theta.max(dim=0).values.detach().clone()
-
-    case "wst":
-        mlflow.set_experiment("SBI WST")
-
-        pass
 
     case "ps2d+betti" | "betti+ps2d":  # combine both ps2d and betti
         data_type = "ps2d+betti"
         mlflow.set_experiment("SBI PS2D & Betti")
 
-        # we need to see the indices for which ps2d and betti have matching thetas
-        MEMMAP_PATH_PS2D = "datasets/pk_128_train_250325_noise/memmap/"
-        MEMMAP_PATH_BETTI = "datasets/betti/"
-        betti_theta = np.load(MEMMAP_PATH_BETTI + "sbi2_y.npy").astype(np.float32)
-        ps2d_theta = np.memmap(
-            MEMMAP_PATH_PS2D + "theta_memmap.npy",
-            shape=(159449, 3),
-            mode="r",
-            dtype=np.float32,
-        )
-
-        PRECISION_DECIMALS = 5  # if we don't round, then only a few matching thetas but we also dont want to round too much
-        betti_rounded = np.round(betti_theta, decimals=PRECISION_DECIMALS)
-        ps2d_rounded = np.round(ps2d_theta, decimals=PRECISION_DECIMALS)
-
-        betti_dict = {
-            tuple(map(float, row)): index
-            for index, row in enumerate(betti_rounded[:, 0, :])
-        }  # because shape (15951, 20, 3)
-
-        valid_pairs = []
-
-        for index, row in enumerate(ps2d_rounded):
-            row_tuple = tuple(map(float, row.ravel()))
-            if row_tuple in betti_dict:
-                valid_pairs.append((index, betti_dict[row_tuple]))
-
-        ps2d_dataset = ps2d_loader.PS2DDataset(
-            MEMMAP_PATH_PS2D, device=device
-        )  # , transform=lambda x: torch.log10(x + 0.04),)  # because obs min at -0.0395)
-        betti_dataset = betti_loader.BettiDataset(MEMMAP_PATH_BETTI, device=device)
-
         dataset = joint_ps2d_betti_loader.JointPS2DBettiDataset(
-            ps2d_dataset, betti_dataset, valid_pairs
+            data_type_loader.DataDataset("ps2d", device=device),
+            data_type_loader.DataDataset("betti", device=device),
         )
-
-        theta, _ = ps2d_dataset[:]  # because thetas are from ps2d
-        low = theta.min(dim=0).values.detach().clone().to(device)
-        high = theta.max(dim=0).values.detach().clone().to(device)
-
-    case "ps2d+wst" | "wst+ps2d":  # combine both ps2d and wst
-        data_type = "ps2d+wst"
-        mlflow.set_experiment("SBI PS2D & WST")
-        pass
-
-    case "betti+wst" | "wst+betti":  # combine both betti and wst
-        data_type = "betti+wst"
-        mlflow.set_experiment("SBI Betti & WST")
-
-        pass
-
-    case (  # combine all data types
-        "ps2d+betti+wst"
-        | "ps2d+wst+betti"
-        | "betti+ps2d+wst"
-        | "betti+wst+ps2d"
-        | "wst+ps2d+betti"
-        | "wst+betti+ps2d"
-    ):
-        data_type = "ps2d+betti+wst"
-        mlflow.set_experiment("SBI PS2D & Betti & WST")
 
     case other:
         print("No such data type or data type combination.")
         exit(1)
 
+if dataset is None:
+    dataset = data_type_loader.DataDataset(data_type, device=device)
+
+theta = torch.tensor(dataset.params[:, 0, :], device=device)
+low = theta.min(dim=0).values.detach().clone()
+high = theta.max(dim=0).values.detach().clone()
+prior = BoxUniform(low=low, high=high, device=device)
+
 
 def get_compressor(data_type, summary_dim, model=None):
     match data_type:
         case "ps2d":
-            return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
-            # return ps2d_compressor.PS2DCompressor(summary_dim=summary_dim)
+            return model
         case "betti":
             return betti_compressor.BettiCompressor(summary_dim=summary_dim)
         case "ps2d+betti":
             return joint_ps2d_betti_compressor.JointPS2DBettiCompressor(
-                ps2d_compressor.PS2DCompressor(summary_dim=summary_dim),
+                model,
                 betti_compressor.BettiCompressor(summary_dim=summary_dim),
                 summary_dim=summary_dim,
             )
-        # case other:
-        # pass  # do later for wst and for combinations
 
-
-prior = BoxUniform(low=low, high=high, device=device)
 
 ##################
 # 2. gridsearching
@@ -363,11 +291,16 @@ if BEST_PARAMS is None:
 summary_dim, model, num_transforms, hidden_features, num_bins, learning_rate = (
     BEST_PARAMS.values()
 )
-global_gen = torch.manual_seed(26)
+global_gen = torch.manual_seed(831)
+
 train_val_dataset, global_test_dataset = random_split(
-    dataset, [0.8, 0.2], generator=global_gen
+    (Subset(dataset, range(int(len(dataset) / 1)))),
+    [0.8, 0.2],
+    generator=global_gen,
 )
-# train_val_dataset = Subset(train_val_dataset, range(int(len(dataset) / 15)))  # for testing, a fifteenth of the dataset size
+# for testing, a 15th of the dataset size
+
+
 model_info = {
     "number": [],
     "val_loss_values": [],
@@ -379,12 +312,11 @@ model_info = {
 }
 
 tarp_fig, tarp_axs = plt.subplots(
-    6, 5, figsize=(20, 4)
+    6, 5, figsize=(20, 30)
 )  # 1 plot per one of the 30 models
-# tarp_fig, tarp_axs = plt.subplots(1, 5, figsize=(20, 4))  # testing 5
 
 with mlflow.start_run(run_name="Best model run"):
-    for i in range(30):  # testing with 5, producition with 30
+    for i in range(1):  # testing with 5, producition with 30
         model_info["number"].append(i + 1)
         gen = torch.manual_seed(i + 1)
 
@@ -415,12 +347,15 @@ with mlflow.start_run(run_name="Best model run"):
             theta_test = torch.stack(theta_test)
             x_test = torch.stack(x_test)
 
+            embedding = None
+
             ### train a resnet model for the trial
-            if data_type == "ps2d":
+            if data_type in ["ps2d", "ps2d+betti"]:
                 print("starting training for resnet!!!")
                 resnet = ps2d_resnet.PS2DResNet()
+
                 batch_size = 512
-                max_epochs = 100
+                max_epochs = 300
 
                 criterion = (
                     torch.nn.MSELoss()
@@ -429,9 +364,19 @@ with mlflow.start_run(run_name="Best model run"):
 
                 resnet.to(device)
 
-                train_dataset = TensorDataset(x_train, theta_train)
+                if data_type == "ps2d+betti":
+                    x_train_img = x_train[:, :300].view(
+                        -1, 3, 10, 10
+                    )  # fit to number of samples and basic shape
+                    x_test_img = x_test[:, :300].view(
+                        -1, 3, 10, 10
+                    )  # fit to number of samples and basic shape
+                else:
+                    x_train_img = x_train
+                    x_test_img = x_test
+                train_dataset = TensorDataset(x_train_img, theta_train)
                 val_dataset = TensorDataset(
-                    x_test, theta_test
+                    x_test_img, theta_test
                 )  # test is acting as val here in this case
                 train_laoder = DataLoader(
                     train_dataset, batch_size=batch_size, shuffle=True
@@ -503,23 +448,17 @@ with mlflow.start_run(run_name="Best model run"):
                     param.requires_grad = False  # freeze weigts
 
                 print("finished resnet training")
-                neural_posterior = posterior_nn(
-                    model=model,
-                    embedding_net=resnet,
-                    # z_score_x="none",
-                    hidden_features=hidden_features,
-                    num_transforms=num_transforms,
-                    num_bins=num_bins,
-                )
-            else:
-                neural_posterior = posterior_nn(
-                    model=model,
-                    embedding_net=get_compressor(data_type, summary_dim),
-                    # z_score_x="none",
-                    hidden_features=hidden_features,
-                    num_transforms=num_transforms,
-                    num_bins=num_bins,
-                )
+                embedding = get_compressor(data_type, summary_dim, model=resnet)
+            if embedding is None:
+                embedding = get_compressor(data_type, summary_dim)
+            neural_posterior = posterior_nn(
+                model=model,
+                embedding_net=embedding,
+                z_score_x="none" if data_type != "betti" else "independent",
+                hidden_features=hidden_features,
+                num_transforms=num_transforms,
+                num_bins=num_bins,
+            )
 
             trainer = NPE(
                 density_estimator=neural_posterior,
@@ -708,11 +647,11 @@ with mlflow.start_run(run_name="Best model evaluation"):
 
     # scenarios (low = fast, high = slow reionization)
     theta_mean = theta_test.cpu().mean(dim=1)  # mean across bins for each observation
-    low_target = torch.quantile(theta_mean, 0.16)  # 10th percentile, not extreme at 0
+    low_target = torch.quantile(theta_mean, 0.16)  # 16th percentile, not extreme at 0
     mid_target = torch.median(theta_mean)  # 50th percentile
     high_target = torch.quantile(
         theta_mean, 0.84
-    )  # 90th percentile, not extreme at 100
+    )  # 84th percentile, not extreme at 100
 
     # get the indices of the 3 sceanrios
     low_index = (theta_mean - low_target).abs().argmin().item()

@@ -18,7 +18,7 @@ class JointPS2DBettiCompressor(nn.Module):
         self.ps2d_embedding = ps2d_embedding
         self.betti_embedding = betti_embedding
         self.fc = nn.Sequential(
-            nn.Linear(in_features=2 * summary_dim, out_features=128),
+            nn.Linear(in_features=summary_dim + 3, out_features=128),
             nn.LayerNorm(128),
             nn.LeakyReLU(),
             nn.Dropout(
