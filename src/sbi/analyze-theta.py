@@ -3,8 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from dataloader.betti_loader import BettiDataset
-from dataloader.ps2d_loader import PS2DDataset
+from dataloader.data_type_loader import DataDataset
 
 OUTPUT_DIR = "plots/dataset_exploration"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -19,15 +18,15 @@ device = torch.device(
 print(f"using device: {device}\n")
 
 datasets_to_explore = {
-    # "ps2d": {
-    #    "path": "datasets/pk_128_train_250325_noise/memmap/",
-    #   "loader_cls": lambda: (
-    #      PS2DDataset
-    # ),  # wrapped in lambda to prevent import errors during setup
-    # },
-    "betti": {
-        "path": "datasets/betti/",
-        "loader_cls": lambda: BettiDataset,
+    "ps2d": {
+        "path": "datasets/pk_128_train_250325_noise/memmap/",
+        "loader_cls": lambda: (
+            DataDataset
+        ),  # wrapped in lambda to prevent import errors during setup
+        # },
+        # "betti": {
+        #    "path": "datasets/betti/",
+        #    "loader_cls": lambda: DataDataset,
     },
 }
 
@@ -35,12 +34,10 @@ for name, config in datasets_to_explore.items():
     print(f"Analysing dataset {name.upper()}")
     try:
         dataset_cls = config["loader_cls"]()
-        dataset = dataset_cls(config["path"], device=device)
-        if name == "betti":
-            _, obs = dataset[:]
-            theta = torch.tensor(dataset.params[:, 0, :], device=dataset.device)
-        else:
-            theta, obs = dataset[:]
+        dataset = dataset_cls(name, device=device)
+        _, obs = dataset[:]
+        theta = torch.tensor(dataset.params[:, 0, :], device=device)
+
     except Exception as e:
         print(f"Skipping {name} due to loader/path error: {e}\n")
         continue
