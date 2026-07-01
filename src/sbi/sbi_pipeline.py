@@ -135,16 +135,29 @@ def get_compressor(data_type, summary_dim, model=None):
             )
 
 
+global_gen = torch.manual_seed(831)
+
+train_val_dataset, global_test_dataset = random_split(
+    (Subset(dataset, range(int(len(dataset))))),
+    [0.8, 0.2],
+    generator=global_gen,
+)
+# for testing, a 15th of the dataset size
+
+
 ##################
 # 2. gridsearching
 ##################
 if BEST_PARAMS is None:
     cv_data = {
-        "sbi_validation_scores": [],
-        "metrics": (),
-        "metrics_per_bin": [],
         "split_index": (),
     }
+
+    gs_size = int(
+        0.2 * len(train_val_dataset)
+    )  # 20 percent of dataset for gridsearching, to speed it up
+    gs_indices = torch.randperm(len(train_val_dataset), generator=global_gen)[:gs_size]
+    gs_dataset = Subset(train_val_dataset, gs_indices)
 
     global_best_mean_val_loss = float("inf")
 
@@ -173,7 +186,7 @@ if BEST_PARAMS is None:
         ):
             cv = KFold(n_splits=3, shuffle=True, random_state=26)
             for fold, (train_index, test_index) in enumerate(
-                cv.split(range(len(dataset)))
+                cv.split(range(len(gs_dataset)))
             ):
                 with mlflow.start_run(run_name=f"fold_{fold + 1}", nested=True):
                     tracker = MLflowAdapter(mlflow)
@@ -190,8 +203,8 @@ if BEST_PARAMS is None:
                         }
                     )
 
-                    train_set = Subset(dataset, train_index)
-                    test_set = Subset(dataset, test_index)
+                    train_set = Subset(gs_dataset, train_index)
+                    test_set = Subset(gs_dataset, test_index)
 
                     theta_train, x_train = zip(
                         *[train_set[i] for i in range(len(train_set))]
@@ -205,22 +218,11 @@ if BEST_PARAMS is None:
                     x_test = torch.stack(x_test)
 
                     embedding = None
-        
+
                     ### train a resnet model for the trial
                     if data_type in ["ps2d", "ps2d+betti"]:
                         print("starting training for resnet!!!")
-                        resnet = ps2d_resnet.PS2DResNet()
-        
-                        batch_size = 512
-                        max_epochs = 300
-        
-                        criterion = (
-                            torch.nn.MSELoss()
-                        )  # mean square error loss for the regression task
-                        optimizer = torch.optim.Adam(resnet.parameters(), lr=1e-3)
-        
-                        resnet.to(device)
-        
+
                         if data_type == "ps2d+betti":
                             x_train_img = x_train[:, :300].view(
                                 -1, 3, 10, 10
@@ -231,79 +233,10 @@ if BEST_PARAMS is None:
                         else:
                             x_train_img = x_train
                             x_test_img = x_test
-                        train_dataset = TensorDataset(x_train_img, theta_train)
-                        val_dataset = TensorDataset(
-                            x_test_img, theta_test
-                        )  # test is acting as val here in this case
-                        train_laoder = DataLoader(
-                            train_dataset, batch_size=batch_size, shuffle=True
-                        )  # shuffling
-                        val_loader = DataLoader(
-                            val_dataset, batch_size=batch_size, shuffle=False
-                        )  # no shuffling
-        
-                        best_val_loss = float("inf")
-                        best_weights = None
-                        epochs_without_better_loss = (
-                            0  # after 10 epochs with no improvement, we stop
+                        resnet = ps2d_resnet.train_resnet(
+                            x_train_img, x_test_img, theta_train, theta_test, device
                         )
-        
-                        for epoch in range(max_epochs):
-                            print(f"epoch number {epoch}/{max_epochs}")
-                            resnet.train()  # train mode on (this means dropout is active) -> dropout should NOT be active after training when evaluating since the normalizing flow wants something it can go back and forth on
-                            train_loss = 0.0
-        
-                            for x_batch, theta_batch in train_laoder:
-                                x_batch, theta_batch = (
-                                    x_batch.to(device),
-                                    theta_batch.to(device),
-                                )
-        
-                                optimizer.zero_grad()  # get rid of old gradients
-                                predictions = resnet(x_batch)
-                                loss = criterion(
-                                    predictions, theta_batch
-                                )  # get loss of pred vs real
-                                loss.backward()  # backward propagation, according to the loss metric
-                                optimizer.step()  # this will update weigths, according to the optimizer
-        
-                                train_loss += loss.item() * x_batch.size(0)  # batch loss
-        
-                            train_loss /= len(train_laoder.dataset)  # total loss of all batches
-        
-                            resnet.eval()  # evaluation mode so we can do validation loss
-                            val_loss = 0.0
-                            with torch.no_grad():
-                                for x_batch, theta_batch in val_loader:
-                                    x_batch, theta_batch = (
-                                        x_batch.to(device),
-                                        theta_batch.to(device),
-                                    )
-        
-                                    predictions = resnet(x_batch)
-                                    loss = criterion(predictions, theta_batch)
-                                    val_loss += loss.item() * x_batch.size(0)
-        
-                            val_loss /= len(val_loader.dataset)
-        
-                            if val_loss < best_val_loss:
-                                best_val_loss = val_loss
-                                best_weights = copy.deepcopy(
-                                    resnet.state_dict()
-                                )  # deepcopy since this will change every epoch
-                                epochs_without_better_loss = 0
-                            else:
-                                epochs_without_better_loss += 1
-        
-                            if epochs_without_better_loss >= 15:
-                                break  # early stopping
-        
-                        resnet.load_state_dict(best_weights)
-                        print("val loss: ", best_val_loss)
-                        resnet.eval()  # set to ecval mode so dropout is off when used by sbi
-                        for param in resnet.parameters():
-                            param.requires_grad = False  # freeze weigts
-        
+
                         print("finished resnet training")
                         embedding = get_compressor(data_type, summary_dim, model=resnet)
                     if embedding is None:
@@ -395,21 +328,11 @@ if BEST_PARAMS is None:
 summary_dim, model, num_transforms, hidden_features, num_bins, learning_rate = (
     BEST_PARAMS.values()
 )
-global_gen = torch.manual_seed(831)
-
-train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset) / 15)))),
-    [0.8, 0.2],
-    generator=global_gen,
-)
-# for testing, a 15th of the dataset size
-
 
 model_info = {
     "number": [],
     "val_loss_values": [],
     "tarp_values": [],
-    "tarp_atc_values": [],
     "posteriors": [],
     "density_estimators": [],
     "tarp_curves": [],
@@ -420,7 +343,7 @@ tarp_fig, tarp_axs = plt.subplots(
 )  # 1 plot per one of the 30 models
 
 with mlflow.start_run(run_name="Best model run"):
-    for i in range(1):  # testing with 5, producition with 30
+    for i in range(30):  # testing with 5, producition with 30
         model_info["number"].append(i + 1)
         gen = torch.manual_seed(i + 1)
 
@@ -456,17 +379,6 @@ with mlflow.start_run(run_name="Best model run"):
             ### train a resnet model for the trial
             if data_type in ["ps2d", "ps2d+betti"]:
                 print("starting training for resnet!!!")
-                resnet = ps2d_resnet.PS2DResNet()
-
-                batch_size = 512
-                max_epochs = 300
-
-                criterion = (
-                    torch.nn.MSELoss()
-                )  # mean square error loss for the regression task
-                optimizer = torch.optim.Adam(resnet.parameters(), lr=1e-3)
-
-                resnet.to(device)
 
                 if data_type == "ps2d+betti":
                     x_train_img = x_train[:, :300].view(
@@ -478,78 +390,9 @@ with mlflow.start_run(run_name="Best model run"):
                 else:
                     x_train_img = x_train
                     x_test_img = x_test
-                train_dataset = TensorDataset(x_train_img, theta_train)
-                val_dataset = TensorDataset(
-                    x_test_img, theta_test
-                )  # test is acting as val here in this case
-                train_laoder = DataLoader(
-                    train_dataset, batch_size=batch_size, shuffle=True
-                )  # shuffling
-                val_loader = DataLoader(
-                    val_dataset, batch_size=batch_size, shuffle=False
-                )  # no shuffling
-
-                best_val_loss = float("inf")
-                best_weights = None
-                epochs_without_better_loss = (
-                    0  # after 10 epochs with no improvement, we stop
+                resnet = ps2d_resnet.train_resnet(
+                    x_train_img, x_test_img, theta_train, theta_test, device
                 )
-
-                for epoch in range(max_epochs):
-                    print(f"epoch number {epoch}/{max_epochs}")
-                    resnet.train()  # train mode on (this means dropout is active) -> dropout should NOT be active after training when evaluating since the normalizing flow wants something it can go back and forth on
-                    train_loss = 0.0
-
-                    for x_batch, theta_batch in train_laoder:
-                        x_batch, theta_batch = (
-                            x_batch.to(device),
-                            theta_batch.to(device),
-                        )
-
-                        optimizer.zero_grad()  # get rid of old gradients
-                        predictions = resnet(x_batch)
-                        loss = criterion(
-                            predictions, theta_batch
-                        )  # get loss of pred vs real
-                        loss.backward()  # backward propagation, according to the loss metric
-                        optimizer.step()  # this will update weigths, according to the optimizer
-
-                        train_loss += loss.item() * x_batch.size(0)  # batch loss
-
-                    train_loss /= len(train_laoder.dataset)  # total loss of all batches
-
-                    resnet.eval()  # evaluation mode so we can do validation loss
-                    val_loss = 0.0
-                    with torch.no_grad():
-                        for x_batch, theta_batch in val_loader:
-                            x_batch, theta_batch = (
-                                x_batch.to(device),
-                                theta_batch.to(device),
-                            )
-
-                            predictions = resnet(x_batch)
-                            loss = criterion(predictions, theta_batch)
-                            val_loss += loss.item() * x_batch.size(0)
-
-                    val_loss /= len(val_loader.dataset)
-
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        best_weights = copy.deepcopy(
-                            resnet.state_dict()
-                        )  # deepcopy since this will change every epoch
-                        epochs_without_better_loss = 0
-                    else:
-                        epochs_without_better_loss += 1
-
-                    if epochs_without_better_loss >= 15:
-                        break  # early stopping
-
-                resnet.load_state_dict(best_weights)
-                print("val loss: ", best_val_loss)
-                resnet.eval()  # set to ecval mode so dropout is off when used by sbi
-                for param in resnet.parameters():
-                    param.requires_grad = False  # freeze weigts
 
                 print("finished resnet training")
                 embedding = get_compressor(data_type, summary_dim, model=resnet)
@@ -687,7 +530,6 @@ with mlflow.start_run(run_name="Best model run"):
 
 
 tarp_dict = dict(model_info["tarp_values"])
-tarp_dict_atc = dict(model_info["tarp_atc_values"])
 
 ##################
 # 4. best model
@@ -925,7 +767,7 @@ with mlflow.start_run(run_name="Best model evaluation"):
     for ecp_vals, alpha_vals in global_tarp_curves:
         tarp_eval_ax.plot(alpha_vals, ecp_vals, color="purple", alpha=0.15, linewidth=1)
 
-    tarp_eval_ax.set_title(f"Global test set TARP: p = {mean_global_pval:.6f})")
+    tarp_eval_ax.set_title(f"Global test set TARP: p = {mean_global_pval:.6f}")
     tarp_eval_ax.set_xlabel("Credibility level")
     tarp_eval_ax.set_ylabel("Expected coverage probability")
 
