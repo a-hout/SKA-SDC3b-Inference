@@ -384,7 +384,6 @@ with mlflow.start_run(run_name="Best ensemble model run"):
             model_info["posteriors"].append((i + 1, posterior))
 
     posteriors = dict(model_info["posteriors"])
-    # tarp_dict = dict(model_info["tarp_values"])  # this way we have {number: ks_pval}
     tarp_sorted = sorted(model_info["tarp_values"], key=lambda x: x[1], reverse=True)
     best_posteriors = []
     selected_runs = []
@@ -511,6 +510,7 @@ with mlflow.start_run(run_name="Best ensemble model evaluation"):
     scenario_samples = {}
 
     pairplot_figs = {}
+    check_figs = {}
     fig, axes = plt.subplots(1, 1, figsize=(7, 5))
 
     for name, index, color in [
@@ -519,6 +519,12 @@ with mlflow.start_run(run_name="Best ensemble model evaluation"):
         ("high", high_index, "blue"),
     ]:
         with torch.no_grad():
+            ensemble_samples = [
+                posterior.sample(
+                    (1000,), x=x_test[index], show_progress_bars=False
+                ).cpu()
+                for posterior in best_posteriors
+            ]
             samples = best_posterior.sample(
                 (5000,),
                 x=x_test[index],
@@ -559,11 +565,32 @@ with mlflow.start_run(run_name="Best ensemble model evaluation"):
             label=f"{name} true xHI",
         )
 
-        fig_pair, ax = pairplot(samples, labels=["xHI_z1", "xHI_z2", "xHI_z3"])
+        fig_pair, ax = pairplot(
+            samples,
+            points=true_theta.reshape(1, -1),
+            labels=["xHI_z1", "xHI_z2", "xHI_z3"],
+            fig_kwargs={
+                "points_colors": ["red"],
+            },
+        )
         pairplot_figs[name] = fig_pair
         fig_pair.savefig(
             f"models/ensemble-sbi/{data_type}/pairplot_{name}_xHI.png"
         )  # also available via mlflow
+
+        # plot the posteriors
+        fig_check, axes_check = pairplot(
+            ensemble_samples,
+            points=true_theta.reshape(1, -1),
+            labels=["xHI_z1", "xHI_z2", "xHI_z3"],
+            fig_kwargs={
+                "points_colors": ["red"],
+            },
+        )
+        fig_check.savefig(
+            f"models/ensemble-sbi/{data_type}/ensemble_check_pairplot_{name}.png"
+        )
+        check_figs[name] = fig_check
 
     for boundary in [165.9, 180.9]:
         axes.axvline(boundary, color="gray", linestyle="--", alpha=0.5)
@@ -664,6 +691,69 @@ with mlflow.start_run(run_name="Best ensemble model evaluation"):
     tarp_eval_fig.savefig(f"models/ensemble-sbi/{data_type}/global_tarp_plot.png")
     tracker.add_figure("global_tarp_plot", tarp_eval_fig)
 
+    # PPC
+    x_test_np = x_test.cpu().numpy()
+
+    nn_finder = NearestNeighbors(
+        n_neighbors=1
+    ).fit(
+        theta_test_cpu.numpy()
+    )  # we will be using the nearest theta instead of the simulator since we do not possess the latter
+
+    n_ppc = 300  # we will be looking up 300 thetas, to ensure to get the nearest (not guaranteed unless n_ppc is higher)
+    fig_ppc, axes_ppc = plt.subplots(1, 3, figsize=(20, 4))
+    ppc_metrics = {}
+
+    for ax, (name, index, color) in zip(
+        axes_ppc,
+        [
+            ("low", low_index, "red"),
+            ("mid", mid_index, "green"),
+            ("high", high_index, "blue"),
+        ],
+    ):
+        x_obs = x_test_np[
+            index
+        ]  # index gets the observations that are linked in the specific scenario
+        theta_p = scenario_samples[name][0][:n_ppc].numpy()  # shape (300, 3)
+
+        distances, nn_index = nn_finder.kneighbors(theta_p)
+        x_pp = x_test_np[nn_index[:, 0]]  # (300, index observations)
+        x_pp_mean = x_pp.mean(axis=0)
+        x_pp_std = x_pp.std(axis=0)
+
+        frac_res = (x_obs - x_pp_mean) / (np.abs(x_pp_mean) + 1e-10)  # residulas
+        z_res = (x_obs - x_pp_mean) / (x_pp_std + 1e-10)  # z residuals
+
+        low_ppc = min(x_obs.min(), x_pp_mean.min())
+        high_ppc = max(x_obs.max(), x_pp_mean.max())
+        ax.scatter(x_pp_mean, x_obs, color=color, alpha=0.3, s=5)
+        ax.plot([low_ppc, high_ppc], [low_ppc, high_ppc], "k--", alpha=0.6, linewidth=1)
+        ax.set_xlabel("mean(x_pp)")
+        ax.set_ylabel("x_obs")
+
+        ppc_metrics[name] = {
+            "mean_abs_z": float(np.abs(z_res).mean()),
+            "mean_abs_frac_residual": float(np.abs(frac_res).mean()),
+            "mean_nn_dist": float(distances.mean()),
+        }
+        ax.set_title(
+            f"{name}: mean |z|={ppc_metrics[name]['mean_abs_z']:.2f}"
+            f"  mean |fractional residual|={ppc_metrics[name]['mean_abs_frac_residual']:.2f}"
+        )
+
+    fig_ppc.suptitle("Posterior predictive check (KNN): x_obs vs x_pp")
+    fig_ppc.savefig(f"models/ensemble-sbi/{data_type}/ppc_plot.png")
+    tracker.add_figure("ppc_plot", fig_ppc)
+    for name, m in ppc_metrics.items():
+        mlflow.log_metrics(
+            {
+                f"ppc_mean_z_{name}": m["mean_abs_z"],
+                f"ppc_frac_res_{name}": m["mean_abs_frac_residual"],
+                f"ppc_nn_dist_{name}": m["mean_nn_dist"],
+            }
+        )
+
     # save evaluation
     with open(f"models/ensemble-sbi/{data_type}/evaluation.json", "w") as f:
         json.dump(
@@ -681,6 +771,7 @@ with mlflow.start_run(run_name="Best ensemble model evaluation"):
                 },
                 "global_tarp_ks_pval": float(mean_global_pval),
                 "val_loss": float(best_val_loss),
+                "ppc_metrics": ppc_metrics,
             },
             f,
             indent=4,
@@ -709,5 +800,6 @@ with mlflow.start_run(run_name="Best ensemble model evaluation"):
     tracker.add_figure("pxz_plot", fig_pxz)
     for name in ["low", "mid", "high"]:
         tracker.add_figure(f"pairplot_{name}_xHI", pairplot_figs[name])
+        tracker.add_figure(f"ensemble_check_pairplot_{name}", check_figs[name])
 
 mlflow.end_run()

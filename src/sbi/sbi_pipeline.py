@@ -58,6 +58,7 @@ from sbi.utils import BoxUniform
 from scipy.stats import gaussian_kde
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
+from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.dataset import Subset, random_split
 from tqdm import tqdm
@@ -137,7 +138,6 @@ def get_compressor(data_type, summary_dim, model=None):
 ##################
 # 2. gridsearching
 ##################
-# should be an option to disable this section if already best params found (and then load via json for 30-run)
 if BEST_PARAMS is None:
     cv_data = {
         "sbi_validation_scores": [],
@@ -204,11 +204,115 @@ if BEST_PARAMS is None:
                     theta_test = torch.stack(theta_test)
                     x_test = torch.stack(x_test)
 
+                    embedding = None
+        
+                    ### train a resnet model for the trial
+                    if data_type in ["ps2d", "ps2d+betti"]:
+                        print("starting training for resnet!!!")
+                        resnet = ps2d_resnet.PS2DResNet()
+        
+                        batch_size = 512
+                        max_epochs = 300
+        
+                        criterion = (
+                            torch.nn.MSELoss()
+                        )  # mean square error loss for the regression task
+                        optimizer = torch.optim.Adam(resnet.parameters(), lr=1e-3)
+        
+                        resnet.to(device)
+        
+                        if data_type == "ps2d+betti":
+                            x_train_img = x_train[:, :300].view(
+                                -1, 3, 10, 10
+                            )  # fit to number of samples and basic shape
+                            x_test_img = x_test[:, :300].view(
+                                -1, 3, 10, 10
+                            )  # fit to number of samples and basic shape
+                        else:
+                            x_train_img = x_train
+                            x_test_img = x_test
+                        train_dataset = TensorDataset(x_train_img, theta_train)
+                        val_dataset = TensorDataset(
+                            x_test_img, theta_test
+                        )  # test is acting as val here in this case
+                        train_laoder = DataLoader(
+                            train_dataset, batch_size=batch_size, shuffle=True
+                        )  # shuffling
+                        val_loader = DataLoader(
+                            val_dataset, batch_size=batch_size, shuffle=False
+                        )  # no shuffling
+        
+                        best_val_loss = float("inf")
+                        best_weights = None
+                        epochs_without_better_loss = (
+                            0  # after 10 epochs with no improvement, we stop
+                        )
+        
+                        for epoch in range(max_epochs):
+                            print(f"epoch number {epoch}/{max_epochs}")
+                            resnet.train()  # train mode on (this means dropout is active) -> dropout should NOT be active after training when evaluating since the normalizing flow wants something it can go back and forth on
+                            train_loss = 0.0
+        
+                            for x_batch, theta_batch in train_laoder:
+                                x_batch, theta_batch = (
+                                    x_batch.to(device),
+                                    theta_batch.to(device),
+                                )
+        
+                                optimizer.zero_grad()  # get rid of old gradients
+                                predictions = resnet(x_batch)
+                                loss = criterion(
+                                    predictions, theta_batch
+                                )  # get loss of pred vs real
+                                loss.backward()  # backward propagation, according to the loss metric
+                                optimizer.step()  # this will update weigths, according to the optimizer
+        
+                                train_loss += loss.item() * x_batch.size(0)  # batch loss
+        
+                            train_loss /= len(train_laoder.dataset)  # total loss of all batches
+        
+                            resnet.eval()  # evaluation mode so we can do validation loss
+                            val_loss = 0.0
+                            with torch.no_grad():
+                                for x_batch, theta_batch in val_loader:
+                                    x_batch, theta_batch = (
+                                        x_batch.to(device),
+                                        theta_batch.to(device),
+                                    )
+        
+                                    predictions = resnet(x_batch)
+                                    loss = criterion(predictions, theta_batch)
+                                    val_loss += loss.item() * x_batch.size(0)
+        
+                            val_loss /= len(val_loader.dataset)
+        
+                            if val_loss < best_val_loss:
+                                best_val_loss = val_loss
+                                best_weights = copy.deepcopy(
+                                    resnet.state_dict()
+                                )  # deepcopy since this will change every epoch
+                                epochs_without_better_loss = 0
+                            else:
+                                epochs_without_better_loss += 1
+        
+                            if epochs_without_better_loss >= 15:
+                                break  # early stopping
+        
+                        resnet.load_state_dict(best_weights)
+                        print("val loss: ", best_val_loss)
+                        resnet.eval()  # set to ecval mode so dropout is off when used by sbi
+                        for param in resnet.parameters():
+                            param.requires_grad = False  # freeze weigts
+        
+                        print("finished resnet training")
+                        embedding = get_compressor(data_type, summary_dim, model=resnet)
+                    if embedding is None:
+                        embedding = get_compressor(data_type, summary_dim)
+
                     neural_posterior = posterior_nn(
                         model=model,
-                        embedding_net=get_compressor(data_type, summary_dim),
-                        # z_score_x="none",
-                        # z_score_theta="independent",
+                        embedding_net=embedding,
+                        z_score_x="none" if data_type != "betti" else "independent",
                         hidden_features=hidden_features,
                         num_transforms=num_transforms,
                         num_bins=num_bins,
@@ -294,7 +398,7 @@ summary_dim, model, num_transforms, hidden_features, num_bins, learning_rate = (
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset) / 1)))),
+    (Subset(dataset, range(int(len(dataset) / 15)))),
     [0.8, 0.2],
     generator=global_gen,
 )
@@ -716,7 +820,14 @@ with mlflow.start_run(run_name="Best model evaluation"):
             label=f"{name} true xHI",
         )
 
-        fig_pair, ax = pairplot(samples, labels=["xHI_z1", "xHI_z2", "xHI_z3"])
+        fig_pair, ax = pairplot(
+            samples,
+            points=true_theta.reshape(1, -1),
+            labels=["xHI_z1", "xHI_z2", "xHI_z3"],
+            fig_kwargs={
+                "points_colors": ["red"],
+            },
+        )
         pairplot_figs[name] = fig_pair
         fig_pair.savefig(
             f"models/sbi/{data_type}/pairplot_{name}_xHI.png"
@@ -821,6 +932,70 @@ with mlflow.start_run(run_name="Best model evaluation"):
     tarp_eval_fig.savefig(f"models/sbi/{data_type}/global_tarp_plot.png")
     tracker.add_figure("global_tarp_plot", tarp_eval_fig)
 
+    # PPC
+    x_test_np = x_test.cpu().numpy()
+
+    nn_finder = NearestNeighbors(
+        n_neighbors=1
+    ).fit(
+        theta_test_cpu.numpy()
+    )  # we will be using the nearest theta instead of the simulator since we do not possess the latter
+
+    n_ppc = 300  # we will be looking up 300 thetas, to ensure to get the nearest (not guaranteed unless n_ppc is higher)
+    fig_ppc, axes_ppc = plt.subplots(1, 3, figsize=(20, 4))
+    ppc_metrics = {}
+
+    for ax, (name, index, color) in zip(
+        axes_ppc,
+        [
+            ("low", low_index, "red"),
+            ("mid", mid_index, "green"),
+            ("high", high_index, "blue"),
+        ],
+    ):
+        x_obs = x_test_np[
+            index
+        ]  # index gets the observations that are linked in the specific scenario
+        theta_p = scenario_samples[name][0][:n_ppc].numpy()  # shape (300, 3)
+
+        distances, nn_index = nn_finder.kneighbors(theta_p)
+        x_pp = x_test_np[nn_index[:, 0]]  # (300, index observations)
+        x_pp_mean = x_pp.mean(axis=0)
+        x_pp_std = x_pp.std(axis=0)
+
+        frac_res = (x_obs - x_pp_mean) / (np.abs(x_pp_mean) + 1e-10)  # residulas
+        z_res = (x_obs - x_pp_mean) / (x_pp_std + 1e-10)  # z residuals
+
+        low_ppc = min(x_obs.min(), x_pp_mean.min())
+        high_ppc = max(x_obs.max(), x_pp_mean.max())
+        ax.scatter(x_pp_mean, x_obs, color=color, alpha=0.3, s=5)
+        ax.plot([low_ppc, high_ppc], [low_ppc, high_ppc], "k--", alpha=0.6, linewidth=1)
+        ax.set_xlabel("mean(x_pp)")
+        ax.set_ylabel("x_obs")
+
+        ppc_metrics[name] = {
+            "mean_abs_z": float(np.abs(z_res).mean()),
+            "mean_abs_frac_residual": float(np.abs(frac_res).mean()),
+            "mean_nn_dist": float(distances.mean()),
+        }
+
+        ax.set_title(
+            f"{name}: mean |z|={ppc_metrics[name]['mean_abs_z']:.2f}"
+            f"  mean |fractional residual|={ppc_metrics[name]['mean_abs_frac_residual']:.2f}"
+        )
+
+    fig_ppc.suptitle("Posterior predictive check (KNN): x_obs vs x_pp")
+    fig_ppc.savefig(f"models/sbi/{data_type}/ppc_plot.png")
+    tracker.add_figure("ppc_plot", fig_ppc)
+    for name, m in ppc_metrics.items():
+        mlflow.log_metrics(
+            {
+                f"ppc_mean_z_{name}": m["mean_abs_z"],
+                f"ppc_frac_res_{name}": m["mean_abs_frac_residual"],
+                f"ppc_nn_dist_{name}": m["mean_nn_dist"],
+            }
+        )
+
     # save evaluation
     with open(f"models/sbi/{data_type}/evaluation.json", "w") as f:
         json.dump(
@@ -838,6 +1013,7 @@ with mlflow.start_run(run_name="Best model evaluation"):
                 },
                 "global_tarp_ks_pval": float(mean_global_pval),
                 "val_loss": float(best_val_loss),
+                "ppc_metrics": ppc_metrics,
             },
             f,
             indent=4,
