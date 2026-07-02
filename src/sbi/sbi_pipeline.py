@@ -132,17 +132,6 @@ def get_compressor(data_type, summary_dim, model=None):
             )
 
 
-def expand_dataset(subset, n_noise=20):
-    # have to call getitem for each obs since we get a random noise realization from it
-    theta_list, x_list = [], []
-    for j in range(len(subset)):
-        for _ in range(n_noise):
-            theta, x = subset[j]
-            theta_list.append(theta)
-            x_list.append(x)
-    return torch.stack(theta_list), torch.stack(x_list)
-
-
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
@@ -214,8 +203,27 @@ if BEST_PARAMS is None:
                     train_set = Subset(gs_dataset, train_index)
                     test_set = Subset(gs_dataset, test_index)
 
-                    theta_train, x_train = expand_dataset(train_set)
-                    theta_test, x_test = expand_dataset(test_set)
+                    theta_train_list, x_train_list = [], []
+                    for j in range(len(train_set)):
+                        # have to call getitem for each obs since we get a random noise realization from it
+                        n_noise = 20  # hardcoded but both ps2d and betti have 20 noise realizations
+                        for _ in range(n_noise):
+                            theta, x = train_set[j]
+                            theta_train_list.append(theta)
+                            x_train_list.append(x)
+                    theta_train = torch.stack(theta_train_list)
+                    x_train = torch.stack(x_train_list)
+
+                    theta_test_list, x_test_list = [], []
+                    for j in range(len(test_set)):
+                        # have to call getitem for each obs since we get a random noise realization from it
+                        n_noise = 20  # hardcoded but both ps2d and betti have 20 noise realizations
+                        for _ in range(n_noise):
+                            theta, x = test_set[j]
+                            theta_test_list.append(theta)
+                            x_test_list.append(x)
+                    theta_test = torch.stack(theta_test_list)
+                    x_test = torch.stack(x_test_list)
 
                     embedding = None
 
@@ -370,8 +378,31 @@ with mlflow.start_run(run_name="Best model run"):
                 train_val_dataset, [0.8, 0.2], generator=gen
             )
 
-            theta_train, x_train = expand_dataset(train_set)
-            theta_test, x_test = expand_dataset(test_set)
+            theta_train_list, x_train_list = [], []
+            for j in range(len(train_set)):
+                # have to call getitem for each obs since we get a random noise realization from it
+                n_noise = (
+                    20  # hardcoded but both ps2d and betti have 20 noise realizations
+                )
+                for _ in range(n_noise):
+                    theta, x = train_set[j]
+                    theta_train_list.append(theta)
+                    x_train_list.append(x)
+            theta_train = torch.stack(theta_train_list)
+            x_train = torch.stack(x_train_list)
+
+            theta_test_list, x_test_list = [], []
+            for j in range(len(test_set)):
+                # have to call getitem for each obs since we get a random noise realization from it
+                n_noise = (
+                    20  # hardcoded but both ps2d and betti have 20 noise realizations
+                )
+                for _ in range(n_noise):
+                    theta, x = test_set[j]
+                    theta_test_list.append(theta)
+                    x_test_list.append(x)
+            theta_test = torch.stack(theta_test_list)
+            x_test = torch.stack(x_test_list)
 
             embedding = None
 
@@ -553,7 +584,16 @@ best_model_info = {}
 with mlflow.start_run(run_name="Best model evaluation"):
     tracker = MLflowAdapter(mlflow)
 
-    theta_test, x_test = expand_dataset(global_test_dataset)
+    theta_test_list, x_test_list = [], []
+    for j in range(len(global_test_dataset)):
+        # have to call getitem for each obs since we get a random noise realization from it
+        n_noise = 20  # hardcoded but both ps2d and betti have 20 noise realizations
+        for _ in range(n_noise):
+            theta, x = global_test_dataset[j]
+            theta_test_list.append(theta)
+            x_test_list.append(x)
+    theta_test = torch.stack(theta_test_list)
+    x_test = torch.stack(x_test_list)
 
     # metrics
     theta_pred = []
