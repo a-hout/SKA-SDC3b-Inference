@@ -28,7 +28,6 @@ P(x | z) plot with the three scenarios (3 plots)
 ##################################################################################################################
 # 0. imports
 ##################
-import copy
 import json
 import os
 import signal
@@ -50,7 +49,6 @@ from dataloader import (
 )
 from mlflowadapter import MLflowAdapter
 from sbi.analysis import pairplot
-from sbi.analysis.plot import plot_tarp
 from sbi.diagnostics import check_tarp, run_tarp
 from sbi.inference import NPE
 from sbi.neural_nets import posterior_nn
@@ -59,7 +57,6 @@ from scipy.stats import gaussian_kde
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
 from sklearn.neighbors import NearestNeighbors
-from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.dataset import Subset, random_split
 from tqdm import tqdm
 
@@ -77,7 +74,7 @@ device = (
 _ = torch.manual_seed(26)
 
 try:
-    data_type = sys.argv[1].lower().strip("")
+    data_type = sys.argv[1].lower().strip()
 except IndexError:
     print(
         "Normal usage is: python src/sbi/sbi_pipeline.py <data_type> <optional best params path>"
@@ -135,10 +132,21 @@ def get_compressor(data_type, summary_dim, model=None):
             )
 
 
+def expand_dataset(subset, n_noise=20):
+    # have to call getitem for each obs since we get a random noise realization from it
+    theta_list, x_list = [], []
+    for j in range(len(subset)):
+        for _ in range(n_noise):
+            theta, x = subset[j]
+            theta_list.append(theta)
+            x_list.append(x)
+    return torch.stack(theta_list), torch.stack(x_list)
+
+
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset) / 20)))),
+    (Subset(dataset, range(int(len(dataset))))),
     [0.8, 0.2],
     generator=global_gen,
 )
@@ -184,7 +192,7 @@ if BEST_PARAMS is None:
         with mlflow.start_run(
             run_name=f"{model}_sd{summary_dim}_nbins{num_bins}_lr{learning_rate}"
         ):
-            cv = KFold(n_splits=3, shuffle=True, random_state=26)
+            cv = KFold(n_splits=3, shuffle=True, random_state=831)
             for fold, (train_index, test_index) in enumerate(
                 cv.split(range(len(gs_dataset)))
             ):
@@ -206,40 +214,8 @@ if BEST_PARAMS is None:
                     train_set = Subset(gs_dataset, train_index)
                     test_set = Subset(gs_dataset, test_index)
 
-                    """
-                    theta_train, x_train = zip(
-                        *[train_set[i] for i in range(len(train_set))]
-                    )
-                    theta_train = torch.stack(theta_train)
-                    x_train = torch.stack(x_train)
-                    theta_test, x_test = zip(
-                        *[test_set[i] for i in range(len(test_set))]
-                    )
-                    theta_test = torch.stack(theta_test)
-                    x_test = torch.stack(x_test)
-                    """
-
-                    theta_train_list, x_train_list = [], []
-                    for j in range(len(train_set)):
-                        # have to call getitem for each obs since we get a random noise realization from it
-                        n_noise = 20  # hardcoded but both ps2d and betti have 20 noise realizations
-                        for _ in range(n_noise):
-                            theta, x = train_set[j]
-                            theta_train_list.append(theta)
-                            x_train_list.append(x)
-                    theta_train = torch.stack(theta_train_list)
-                    x_train = torch.stack(x_train_list)
-
-                    theta_test_list, x_test_list = [], []
-                    for j in range(len(test_set)):
-                        # have to call getitem for each obs since we get a random noise realization from it
-                        n_noise = 20  # hardcoded but both ps2d and betti have 20 noise realizations
-                        for _ in range(n_noise):
-                            theta, x = test_set[j]
-                            theta_test_list.append(theta)
-                            x_test_list.append(x)
-                    theta_test = torch.stack(theta_test_list)
-                    x_test = torch.stack(x_test_list)
+                    theta_train, x_train = expand_dataset(train_set)
+                    theta_test, x_test = expand_dataset(test_set)
 
                     embedding = None
 
@@ -371,7 +347,7 @@ tarp_fig, tarp_axs = plt.subplots(
 )  # 1 plot per one of the 30 models
 
 with mlflow.start_run(run_name="Best model run"):
-    for i in range(1):  # testing with 5, producition with 30
+    for i in range(30):  # testing with 5, producition with 30
         model_info["number"].append(i + 1)
         gen = torch.manual_seed(i + 1)
 
@@ -394,31 +370,8 @@ with mlflow.start_run(run_name="Best model run"):
                 train_val_dataset, [0.8, 0.2], generator=gen
             )
 
-            theta_train_list, x_train_list = [], []
-            for j in range(len(train_set)):
-                # have to call getitem for each obs since we get a random noise realization from it
-                n_noise = (
-                    20  # hardcoded but both ps2d and betti have 20 noise realizations
-                )
-                for _ in range(n_noise):
-                    theta, x = train_set[j]
-                    theta_train_list.append(theta)
-                    x_train_list.append(x)
-            theta_train = torch.stack(theta_train_list)
-            x_train = torch.stack(x_train_list)
-
-            theta_test_list, x_test_list = [], []
-            for j in range(len(test_set)):
-                # have to call getitem for each obs since we get a random noise realization from it
-                n_noise = (
-                    20  # hardcoded but both ps2d and betti have 20 noise realizations
-                )
-                for _ in range(n_noise):
-                    theta, x = test_set[j]
-                    theta_test_list.append(theta)
-                    x_test_list.append(x)
-            theta_test = torch.stack(theta_test_list)
-            x_test = torch.stack(x_test_list)
+            theta_train, x_train = expand_dataset(train_set)
+            theta_test, x_test = expand_dataset(test_set)
 
             embedding = None
 
@@ -600,16 +553,7 @@ best_model_info = {}
 with mlflow.start_run(run_name="Best model evaluation"):
     tracker = MLflowAdapter(mlflow)
 
-    theta_test_list, x_test_list = [], []
-    for j in range(len(global_test_dataset)):
-        # have to call getitem for each obs since we get a random noise realization from it
-        n_noise = 20  # hardcoded but both ps2d and betti have 20 noise realizations
-        for _ in range(n_noise):
-            theta, x = global_test_dataset[j]
-            theta_test_list.append(theta)
-            x_test_list.append(x)
-    theta_test = torch.stack(theta_test_list)
-    x_test = torch.stack(x_test_list)
+    theta_test, x_test = expand_dataset(global_test_dataset)
 
     # metrics
     theta_pred = []
@@ -831,14 +775,21 @@ with mlflow.start_run(run_name="Best model evaluation"):
 
     # PPC
     x_test_np = x_test.cpu().numpy()
+    theta_unique = (
+        torch.stack(
+            [global_test_dataset[j][0] for j in range(len(global_test_dataset))]
+        )
+        .cpu()
+        .numpy()
+    )
 
     nn_finder = NearestNeighbors(
         n_neighbors=1
     ).fit(
-        theta_test_cpu.numpy()
+        theta_unique
     )  # we will be using the nearest theta instead of the simulator since we do not possess the latter
 
-    n_ppc = 300  # we will be looking up 300 thetas, to ensure to get the nearest (not guaranteed unless n_ppc is higher)
+    n_ppc = 400  # we will be looking up 400 thetas, to ensure to get the nearest (not guaranteed unless n_ppc is higher)
     fig_ppc, axes_ppc = plt.subplots(1, 3, figsize=(20, 4))
     ppc_metrics = {}
 
@@ -856,7 +807,13 @@ with mlflow.start_run(run_name="Best model evaluation"):
         theta_p = scenario_samples[name][0][:n_ppc].numpy()  # shape (300, 3)
 
         distances, nn_index = nn_finder.kneighbors(theta_p)
-        x_pp = x_test_np[nn_index[:, 0]]  # (300, index observations)
+        # (300, index observations)
+        x_pp_list = []
+        for index_pp in nn_index[:, 0]:
+            start_index = index_pp * 20
+            end_index = start_index + 20
+            x_pp_list.append(x_test_np[start_index:end_index].mean(axis=0))
+        x_pp = np.array(x_pp_list)
         x_pp_mean = x_pp.mean(axis=0)
         x_pp_std = x_pp.std(axis=0)
 
