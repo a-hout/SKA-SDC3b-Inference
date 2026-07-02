@@ -182,27 +182,19 @@ with mlflow.start_run(run_name="Best ensemble model run"):
 
             theta_train_list, x_train_list = [], []
             for j in range(len(train_set)):
-                # have to call getitem for each obs since we get a random noise realization from it
-                n_noise = (
-                    20  # hardcoded but both ps2d and betti have 20 noise realizations
-                )
-                for _ in range(n_noise):
-                    theta, x = train_set[j]
-                    theta_train_list.append(theta)
-                    x_train_list.append(x)
+                param, obs = train_set[j]
+                for k in range(obs.shape[0]):
+                    theta_train_list.append(param)
+                    x_train_list.append(obs[k])
             theta_train = torch.stack(theta_train_list)
             x_train = torch.stack(x_train_list)
 
             theta_test_list, x_test_list = [], []
             for j in range(len(test_set)):
-                # have to call getitem for each obs since we get a random noise realization from it
-                n_noise = (
-                    20  # hardcoded but both ps2d and betti have 20 noise realizations
-                )
-                for _ in range(n_noise):
-                    theta, x = test_set[j]
-                    theta_test_list.append(theta)
-                    x_test_list.append(x)
+                param, obs = test_set[j]
+                for k in range(obs.shape[0]):
+                    theta_test_list.append(param)
+                    x_test_list.append(obs[k])
             theta_test = torch.stack(theta_test_list)
             x_test = torch.stack(x_test_list)
 
@@ -381,12 +373,11 @@ with mlflow.start_run(run_name="Best ensemble model evaluation"):
 
     theta_test_list, x_test_list = [], []
     for j in range(len(global_test_dataset)):
-        # have to call getitem for each obs since we get a random noise realization from it
-        n_noise = 20  # hardcoded but both ps2d and betti have 20 noise realizations
-        for _ in range(n_noise):
-            theta, x = global_test_dataset[j]
-            theta_test_list.append(theta)
-            x_test_list.append(x)
+        param, obs = global_test_dataset[j]
+        for k in range(obs.shape[0]):
+            theta_test_list.append(param)
+            x_test_list.append(obs[k])
+
     theta_test = torch.stack(theta_test_list)
     x_test = torch.stack(x_test_list)
 

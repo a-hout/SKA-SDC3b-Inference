@@ -7,6 +7,7 @@ class DataDataset(Dataset):
     def __init__(self, type: str, transform=None, target_transform=None, device="cpu"):
         obs_path = f"datasets/{type}/sbi2_{type}_1000h.npy"
         self.device = device
+
         self.params = np.load(
             "datasets/sbi2_y.npy",
         ).astype(np.float32)
@@ -20,17 +21,17 @@ class DataDataset(Dataset):
     def __getitem__(self, idx):
         param = self.params[idx]
         obs = self.observables[idx]
-        random_noise = np.random.randint(
-            0, obs.shape[0]
-        )  # get index of random noise realisation (between 0 and 21)
+        # random_noise = np.random.randint(
+        #    0, obs.shape[0]
+        # )  # get index of random noise realisation (between 0 and 21)
 
         return (
             torch.tensor(
                 param[0].copy(), device=self.device
             ),  # first element since the 20 noise realisations all share the same theta -> shape (3, )
             torch.tensor(
-                obs[random_noise].copy(), device=self.device
-            ),  # -> shape (3, 3, 21) if betti, else (3, 10, 10) if ps2d
+                obs.copy(), device=self.device
+            ),  # -> shape (20, 3, 3, 21) if betti, else (20, 3, 10, 10) if ps2d
         )  # this will return a tuple of the parameter theta and the observable x at the specified index
 
 
