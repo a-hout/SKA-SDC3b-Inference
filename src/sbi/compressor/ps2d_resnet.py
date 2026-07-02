@@ -2,6 +2,8 @@
 resnet, train based on dataset, then use the trained resnet as the embedding network
 """
 
+import copy
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
