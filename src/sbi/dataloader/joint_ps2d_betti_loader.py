@@ -24,6 +24,9 @@ class JointPS2DBettiDataset(Dataset):
     def __getitem__(self, idx):
         ps2d_theta, ps2d_obs = self.ps2d_dataset[idx]
         _, betti_obs = self.betti_dataset[idx]
-        obs = torch.concatenate((torch.flatten(ps2d_obs), torch.flatten(betti_obs)))
-        # obs is of shape (489) because (3, 10, 10) -> 300 and betti (3, 3, 21) -> 189
+        ps2d_flat = ps2d_obs.view(ps2d_obs.shape[0], -1)  # (20, 300)
+        betti_flat = betti_obs.view(betti_obs.shape[0], -1)  # (20, 189)
+
+        obs = torch.cat((ps2d_flat, betti_flat), dim=1)  # (20, 489)
+        # obs is of shape (20, 489) because (20, 3, 10, 10) -> 20*300 and betti (20, 3, 3, 21) -> 20*189
         return (ps2d_theta, obs)

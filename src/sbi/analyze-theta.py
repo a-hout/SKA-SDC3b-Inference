@@ -9,7 +9,7 @@ OUTPUT_DIR = "plots/dataset_exploration"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 device = torch.device(
-    "cuda"
+    "cuda:2"
     if torch.cuda.is_available()
     else "mps"
     if torch.mps.is_available()
@@ -72,7 +72,7 @@ for name, config in datasets_to_explore.items():
             )
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(f"Theta analysis {name.upper()}", fontsize=16, fontweight="bold")
+    fig.suptitle("Theta analysis", fontsize=16)
 
     # Panel 1 is th log-Scaled histogram of the mean
     axes[0, 0].hist(
@@ -177,7 +177,7 @@ for name, config in datasets_to_explore.items():
     axes[1, 1].legend()
     axes[1, 1].grid(True, alpha=0.3)
 
-    fig_path = os.path.join(OUTPUT_DIR, f"{name}_diagnostic_report.png")
+    fig_path = os.path.join(OUTPUT_DIR, "theta_analysis.png")
     plt.tight_layout()
     plt.savefig(fig_path)
     plt.close()

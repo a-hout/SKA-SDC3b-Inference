@@ -65,7 +65,7 @@ from tqdm import tqdm
 ##################
 
 device = (
-    "cuda:3"
+    "cuda"
     if torch.cuda.is_available()
     else "mps"
     if torch.mps.is_available()
@@ -439,7 +439,7 @@ with mlflow.start_run(run_name="Best model run"):
             )
 
             density_estimator = trainer.append_simulations(theta_train, x_train).train(
-                training_batch_size=512,
+                training_batch_size=1024,
                 show_train_summary=True,
                 learning_rate=learning_rate,
             )
@@ -509,6 +509,10 @@ with mlflow.start_run(run_name="Best model run"):
 
             model_info["density_estimators"].append((i + 1, density_estimator))
             model_info["posteriors"].append((i + 1, posterior))
+
+            del trainer, density_estimator, neural_posterior, embedding
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
     # best model is model with best mean tarp
     tarp_sorted = sorted(model_info["tarp_values"], key=lambda x: x[1], reverse=True)

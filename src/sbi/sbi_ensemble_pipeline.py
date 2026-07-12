@@ -57,7 +57,7 @@ from tqdm import tqdm
 ##################
 
 device = (
-    "cuda:3"
+    "cuda"
     if torch.cuda.is_available()
     else "mps"
     if torch.mps.is_available()
@@ -110,7 +110,10 @@ if dataset is None:
 theta = torch.tensor(dataset.params[:, 0, :], device=device)
 low = theta.min(dim=0).values.detach().clone()
 high = theta.max(dim=0).values.detach().clone()
-prior = BoxUniform(low=low, high=high, device=device)
+prior = BoxUniform(
+    low=torch.zeros(3), high=torch.ones(3), device=device
+)  # ensembles can be finicky with their posteriors, so widening to 0, 1 is a sensible choice and any deviations can be rapidly observed during evaluation
+# prior = BoxUniform(low=low, high=high, device=device)
 
 
 def get_compressor(data_type, summary_dim, model=None):
@@ -238,8 +241,10 @@ with mlflow.start_run(run_name="Best ensemble model run"):
                 tracker=tracker,  # built in by sbi for the tracker with adapter
             )
 
-            density_estimator = trainer.append_simulations(theta_train, x_train).train(
-                training_batch_size=512,
+            density_estimator = trainer.append_simulations(
+                theta_train, x_train
+            ).train(
+                training_batch_size=1024,
                 show_train_summary=True,
                 learning_rate=learning_rate,
             )
@@ -309,6 +314,10 @@ with mlflow.start_run(run_name="Best ensemble model run"):
 
             model_info["density_estimators"].append((i + 1, density_estimator))
             model_info["posteriors"].append((i + 1, posterior))
+
+            del trainer, density_estimator, neural_posterior, embedding
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
     posteriors = dict(model_info["posteriors"])
     tarp_sorted = sorted(model_info["tarp_values"], key=lambda x: x[1], reverse=True)
@@ -613,7 +622,7 @@ with mlflow.start_run(run_name="Best ensemble model evaluation"):
     for ecp_vals, alpha_vals in global_tarp_curves:
         tarp_eval_ax.plot(alpha_vals, ecp_vals, color="purple", alpha=0.15, linewidth=1)
 
-    tarp_eval_ax.set_title(f"Global test set TARP: p = {mean_global_pval:.6f})")
+    tarp_eval_ax.set_title(f"Global test set TARP: p = {mean_global_pval:.6f}")
     tarp_eval_ax.set_xlabel("Credibility level")
     tarp_eval_ax.set_ylabel("Expected coverage probability")
 
