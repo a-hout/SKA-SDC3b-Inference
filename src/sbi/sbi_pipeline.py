@@ -72,6 +72,7 @@ device = (
     else "cpu"
 )
 _ = torch.manual_seed(26)
+torch.set_float32_matmul_precision("high")
 
 try:
     data_type = sys.argv[1].lower().strip()
@@ -203,25 +204,31 @@ if BEST_PARAMS is None:
                     train_set = Subset(gs_dataset, train_index)
                     test_set = Subset(gs_dataset, test_index)
 
-                    theta_train_list, x_train_list = [], []
-                    for j in range(len(train_set)):
-                        param, obs = train_set[j]
-                        for k in range(
-                            obs.shape[0]
-                        ):  # we loop through every noise realization
-                            theta_train_list.append(param)
-                            x_train_list.append(obs[k])
-                    theta_train = torch.stack(theta_train_list)
-                    x_train = torch.stack(x_train_list)
+                    # get all items from the dataset in one pass
+                    # train_set[j] returns (param shape=(3,), obs shape=(20, 3, 3, 21) for betti)
+                    all_params, all_obs = zip(*[train_set[j] for j in range(len(train_set))])
+                    all_params = torch.stack(all_params)  # (N, 3)  ex: (12000, 3)
+                    all_obs = torch.stack(all_obs)     # (N, 20, ...) ex (12000, 20, 3, 3, 21)
 
-                    theta_test_list, x_test_list = [], []
-                    for j in range(len(test_set)):
-                        param, obs = test_set[j]
-                        for k in range(obs.shape[0]):
-                            theta_test_list.append(param)
-                            x_test_list.append(obs[k])
-                    theta_test = torch.stack(theta_test_list)
-                    x_test = torch.stack(x_test_list)
+                    #exxpand theta to match every noise realization
+                    N, n_noise = all_obs.shape[:2]  #N=12000, n_noise=20
+
+                    # unsquueeze adds a dimension so(12000, 3) -> (12000, 1, 3)
+                    # expand copies it 20 times so  (12000, 1, 3) -> (12000, 20, 3)
+                    # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3)
+                    theta_train = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
+
+                    #dlatten obs the same way
+                    # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21)
+                    x_train = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+
+                    all_params, all_obs = zip(*[test_set[j] for j in range(len(test_set))])
+                    all_params = torch.stack(all_params)
+                    all_obs = torch.stack(all_obs)
+
+                    N, n_noise = all_obs.shape[:2]
+                    theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
+                    x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
 
                     embedding = None
 
@@ -271,7 +278,7 @@ if BEST_PARAMS is None:
                     density_estimator = trainer.append_simulations(
                         theta_train, x_train
                     ).train(
-                        training_batch_size=512,
+                        training_batch_size=4096,
                         show_train_summary=True,
                         learning_rate=learning_rate,
                     )
@@ -376,23 +383,31 @@ with mlflow.start_run(run_name="Best model run"):
                 train_val_dataset, [0.8, 0.2], generator=gen
             )
 
-            theta_train_list, x_train_list = [], []
-            for j in range(len(train_set)):
-                param, obs = train_set[j]
-                for k in range(obs.shape[0]):
-                    theta_train_list.append(param)
-                    x_train_list.append(obs[k])
-            theta_train = torch.stack(theta_train_list)
-            x_train = torch.stack(x_train_list)
+            # get all items from the dataset in one pass
+            # train_set[j] returns (param shape=(3,), obs shape=(20, 3, 3, 21) for betti)
+            all_params, all_obs = zip(*[train_set[j] for j in range(len(train_set))])
+            all_params = torch.stack(all_params)  # (N, 3)  ex: (12000, 3)
+            all_obs = torch.stack(all_obs)     # (N, 20, ...) ex (12000, 20, 3, 3, 21)
 
-            theta_test_list, x_test_list = [], []
-            for j in range(len(test_set)):
-                param, obs = test_set[j]
-                for k in range(obs.shape[0]):
-                    theta_test_list.append(param)
-                    x_test_list.append(obs[k])
-            theta_test = torch.stack(theta_test_list)
-            x_test = torch.stack(x_test_list)
+            #exxpand theta to match every noise realization
+            N, n_noise = all_obs.shape[:2]  #N=12000, n_noise=20
+
+            # unsquueeze adds a dimension so(12000, 3) -> (12000, 1, 3)
+            # expand copies it 20 times so  (12000, 1, 3) -> (12000, 20, 3)
+            # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3)
+            theta_train = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
+
+            #dlatten obs the same way
+            # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21)
+            x_train = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+
+            all_params, all_obs = zip(*[test_set[j] for j in range(len(test_set))])
+            all_params = torch.stack(all_params)
+            all_obs = torch.stack(all_obs)
+
+            N, n_noise = all_obs.shape[:2]
+            theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
+            x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
 
             embedding = None
 
@@ -439,7 +454,7 @@ with mlflow.start_run(run_name="Best model run"):
             )
 
             density_estimator = trainer.append_simulations(theta_train, x_train).train(
-                training_batch_size=1024,
+                training_batch_size=4096,
                 show_train_summary=True,
                 learning_rate=learning_rate,
             )
@@ -578,19 +593,23 @@ best_model_info = {}
 with mlflow.start_run(run_name="Best model evaluation"):
     tracker = MLflowAdapter(mlflow)
 
-    theta_test_list, x_test_list = [], []
-    for j in range(len(global_test_dataset)):
-        param, obs = global_test_dataset[j]
-        for k in range(obs.shape[0]):
-            theta_test_list.append(param)
-            x_test_list.append(obs[k])
+    all_params, all_obs = zip(*[global_test_dataset[j] for j in range(len(global_test_dataset))])
+    all_params = torch.stack(all_params)
+    all_obs = torch.stack(all_obs)
 
-    theta_test = torch.stack(theta_test_list)
-    x_test = torch.stack(x_test_list)
+    N, n_noise = all_obs.shape[:2]
+    theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
+    x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+
+    theta_test_cpu = theta_test.cpu()
 
     # metrics
+    metrics_indices = list(range(0, len(x_test), n_noise))
+    x_test_metrics = x_test[metrics_indices]
+    theta_test_metrics = theta_test_cpu[metrics_indices]
+
     theta_pred = []
-    for x_obs in tqdm(x_test, desc="Sampling test observations"):
+    for x_obs in tqdm(x_test_metrics, desc="Sampling test observations"):
         with torch.no_grad():
             samples = best_posterior.sample(
                 (1000,),
@@ -605,22 +624,17 @@ with mlflow.start_run(run_name="Best model evaluation"):
             torch.cuda.empty_cache()
 
     theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
-    theta_test_cpu = theta_test.cpu()
 
     best_model_info["metrics_per_bin"] = []
-    for bin_index in range(3):  # getting metrics per redshift range
-        r2_bin = r2_score(theta_test_cpu[:, bin_index], theta_pred[:, bin_index])
-        rmse_bin = root_mean_squared_error(
-            theta_test_cpu[:, bin_index], theta_pred[:, bin_index]
-        )
-        mae_bin = mean_absolute_error(
-            theta_test_cpu[:, bin_index], theta_pred[:, bin_index]
-        )
+    for bin_index in range(3):
+        r2_bin   = r2_score(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
+        rmse_bin = root_mean_squared_error(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
+        mae_bin  = mean_absolute_error(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
         best_model_info["metrics_per_bin"].append((r2_bin, rmse_bin, mae_bin))
 
-    r2 = r2_score(theta_test_cpu, theta_pred)
-    rmse = root_mean_squared_error(theta_test_cpu, theta_pred)
-    mae = mean_absolute_error(theta_test_cpu, theta_pred)
+    r2   = r2_score(theta_test_metrics, theta_pred)
+    rmse = root_mean_squared_error(theta_test_metrics, theta_pred)
+    mae  = mean_absolute_error(theta_test_metrics, theta_pred)
     best_model_info["metrics"] = (r2, rmse, mae, best_val_loss)
 
     # scenarios (low = fast, high = slow reionization)
@@ -808,13 +822,7 @@ with mlflow.start_run(run_name="Best model evaluation"):
 
     # PPC
     x_test_np = x_test.cpu().numpy()
-    theta_unique = (
-        torch.stack(
-            [global_test_dataset[j][0] for j in range(len(global_test_dataset))]
-        )
-        .cpu()
-        .numpy()
-    )
+    theta_unique = all_params.cpu().numpy()
 
     nn_finder = NearestNeighbors(
         n_neighbors=1
