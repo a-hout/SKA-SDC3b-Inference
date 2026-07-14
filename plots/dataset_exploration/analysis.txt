@@ -1,25 +1,4 @@
-Analysing dataset PS2D
-Dataset shape: 15951 samples, 3 redshift bins.
-
-Summary statistics (mean parameter across bins)
-Absolute min: 0.00000
-16th percentile: 0.31692
-50th percentile (median): 0.60760
-84th percentile: 0.83299
-Absolute max: 0.95377
-
-per bin statistics.........
-Bin 1
-	min: 0.00000	max: 0.97402	mean: 0.72122
-	Boundary alert: 12 samples <= 0.01, 0 samples >= 0.99
-Bin 2
-	min: 0.00000	max: 0.95661	mean: 0.58239
-	Boundary alert: 124 samples <= 0.01, 0 samples >= 0.99
-Bin 3
-	min: 0.00000	max: 0.94065	mean: 0.43266
-	Boundary alert: 1038 samples <= 0.01, 0 samples >= 0.99
-
-Analysing dataset BETTI
+Analysing dataset theta
 Dataset shape: 15951 samples, 3 redshift bins.
 
 Summary statistics (mean parameter across bins)

@@ -9,7 +9,7 @@ OUTPUT_DIR = "plots/dataset_exploration"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 device = torch.device(
-    "cuda:2"
+    "cuda"
     if torch.cuda.is_available()
     else "mps"
     if torch.mps.is_available()
@@ -19,19 +19,15 @@ print(f"using device: {device}\n")
 
 datasets_to_explore = {
     "ps2d": {
-        "path": "datasets/pk_128_train_250325_noise/memmap/",
+        "path": "datasets/ps2d", #is the same for betti, since we analyze theta
         "loader_cls": lambda: (
             DataDataset
-        ),  # wrapped in lambda to prevent import errors during setup
-        # },
-        # "betti": {
-        #    "path": "datasets/betti/",
-        #    "loader_cls": lambda: DataDataset,
-    },
+        )
+    }
 }
 
 for name, config in datasets_to_explore.items():
-    print(f"Analysing dataset {name.upper()}")
+    print(f"Analysing dataset theta")
     try:
         dataset_cls = config["loader_cls"]()
         dataset = dataset_cls(name, device=device)
