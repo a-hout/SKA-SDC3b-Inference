@@ -18,7 +18,7 @@ class JointPS2DBettiCompressor(nn.Module):
         self.ps2d_embedding = ps2d_embedding
         self.betti_embedding = betti_embedding
         self.fc = nn.Sequential(
-            nn.Linear(in_features=summary_dim + 3, out_features=128),
+            nn.Linear(in_features=summary_dim + 3, out_features=128), #asymmetry in input dimensions, could be that the betti compressor dominates in training
             nn.LayerNorm(128),
             nn.LeakyReLU(),
             nn.Dropout(
@@ -33,7 +33,6 @@ class JointPS2DBettiCompressor(nn.Module):
 
     def forward(self, x):
         # shape (batch, 489)
-
         # one part (first 300) of x is ps2d, which we will feed to the ps2d embedding
         x_ps2d = x[:, :300].view(
             -1, 3, 10, 10

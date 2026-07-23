@@ -1,26 +1,35 @@
 ##################################################################################################################
 
 """
-Ensemble pipeline training, similar to the standard sbi pipeline
+Ensemble pipeline training, similar to the standard sbi pipeline.
+No gridsearching, we will assume the gridsearching for the single-model carries over when ensembling.
 
 1. Init of parameters and data
 
 2. Train 30 times with different seeds to validate stability
 train -> get val-loss -> run tarp (with 10 min timeout) and get calibration results
 
-3. at the end, get the 5 best models with the best calibration (most negative val-loss and tarp closest to 1) and create an Ensemble Posterior from it
+3. at the end, get the 5 best models with the best calibration (best tarp mean p-value) and create an Ensemble Posterior from it
 
-4. Full evaluation with metrics, overal and per z_x
+4. Full evaluation
+
+metrics, overal and per z_x
 R2
 RMSE
 MAE
-Val loss
+Also Val loss
 
-pairplots
+pairplots with ground truth
 
 reionisation history with the three scenarios + the actual mean ground truth for comparison
 
-P(x | z) plot with the three scenarios (3 plots) (and comparison with ground truth?)
+P(x | z) plot with the three scenarios (3 plots)
+
+Global tarp plot
+
+PPC metrics and plot (to calibrate in obseravtion space), using KNN
+
+Save artifacts and log them
 """
 
 ##################################################################################################################

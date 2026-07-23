@@ -1,0 +1,10 @@
+{
+  "best_params": {
+    "summary_dim": 32,
+    "model": "nsf",
+    "num_transforms": 8,
+    "hidden_features": 128,
+    "num_bins": 32,
+    "learning_rate": 0.0005
+  }
+}

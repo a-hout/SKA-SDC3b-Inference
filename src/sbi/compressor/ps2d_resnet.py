@@ -1,5 +1,5 @@
 """
-resnet, train based on dataset, then use the trained resnet as the embedding network
+resnet, train based on dataset, freeze parameters and weights, then use the trained resnet as the embedding network
 """
 
 import copy
@@ -15,7 +15,7 @@ from torchvision.models import (
 def train_resnet(x_train_img, x_test_img, theta_train, theta_test, device):
     resnet = PS2DResNet()
 
-    batch_size = 512
+    batch_size = 512 #bad habit, should be passed in parameters to be the same as the normalizing flow
     max_epochs = 300
 
     criterion = torch.nn.MSELoss()  # mean square error loss for the regression task
@@ -43,7 +43,7 @@ def train_resnet(x_train_img, x_test_img, theta_train, theta_test, device):
         resnet.train()  # train mode on (this means dropout is active) -> dropout should NOT be active after training when evaluating since the normalizing flow wants something it can go back and forth on
         train_loss = 0.0
 
-        for x_batch, theta_batch in train_laoder:
+        for x_batch, theta_batch in train_loader:
             x_batch, theta_batch = (
                 x_batch.to(device),
                 theta_batch.to(device),
@@ -57,7 +57,7 @@ def train_resnet(x_train_img, x_test_img, theta_train, theta_test, device):
 
             train_loss += loss.item() * x_batch.size(0)  # batch loss
 
-        train_loss /= len(train_laoder.dataset)  # total loss of all batches
+        train_loss /= len(train_loader.dataset)  # total loss of all batches
 
         resnet.eval()  # evaluation mode so we can do validation loss
         val_loss = 0.0
@@ -96,6 +96,9 @@ def train_resnet(x_train_img, x_test_img, theta_train, theta_test, device):
 
 
 class PS2DResNet(nn.Module):
+    """
+    Embedding network is based on the resnet-18 architecture but modified to suit the small image matrix
+    """
     def __init__(self):
         super().__init__()
         self.resnet = resnet18(weights=None)  # we want to train the weights ourselves
@@ -119,7 +122,6 @@ class PS2DResNet(nn.Module):
         )
 
     def forward(self, x):
-        # shape (batch, 3, 10, 10) or entirety (all, 3, 10, 10), where to define batch size when training resnet?
         x = self.resnet(x)
         x = self.end_layer(x)
         return x

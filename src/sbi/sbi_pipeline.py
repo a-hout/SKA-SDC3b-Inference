@@ -1,7 +1,7 @@
 ##################################################################################################################
 
 """
-Pipeline for generic data types (ps2d, betti) training, with the aid of mlflow.
+Pipeline for data types (ps2d, betti) training, with the aid of mlflow.
 
 1. Init of parameters and data
 
@@ -9,20 +9,29 @@ Pipeline for generic data types (ps2d, betti) training, with the aid of mlflow.
 
 3. Train again 30 times with best parameters with different seeds to validate stability
 train -> get val-loss -> run tarp (with 10 min timeout and 20 realizations) and get calibration results
+(can skip gridsearch step to directly train here if best_params.json is available)
 
 4. at the end, get the best model with the best calibration (best mean p-val of TARP)
 
-5. Full evaluation with metrics, overal and per z_x
+5. Full evaluation
+
+metrics, overal and per z_x
 R2
 RMSE
 MAE
-Val loss
+Also Val loss
 
-pairplots
+pairplots with ground truth
 
 reionisation history with the three scenarios + the actual mean ground truth for comparison
 
 P(x | z) plot with the three scenarios (3 plots)
+
+Global tarp plot
+
+PPC metrics and plot (to calibrate in obseravtion space), using KNN
+
+Save artifacts and log them
 """
 
 ##################################################################################################################
@@ -71,8 +80,7 @@ device = (
     if torch.mps.is_available()
     else "cpu"
 )
-_ = torch.manual_seed(26)
-torch.set_float32_matmul_precision("high")
+_ = torch.manual_seed(831) #random number for random generator
 
 try:
     data_type = sys.argv[1].lower().strip()
@@ -116,10 +124,13 @@ if dataset is None:
 theta = torch.tensor(dataset.params[:, 0, :], device=device)
 low = theta.min(dim=0).values.detach().clone()
 high = theta.max(dim=0).values.detach().clone()
-prior = BoxUniform(low=low, high=high, device=device)
+prior = BoxUniform(low=low, high=high, device=device) #have to watch out since NPE can have a bug where density prob is too close to prior bounds -> rejection smapling
 
 
 def get_compressor(data_type, summary_dim, model=None):
+    """
+    fetches the embedding network to train with the normalizing flow (dependent on the data type)
+    """
     match data_type:
         case "ps2d":
             return model
@@ -136,11 +147,10 @@ def get_compressor(data_type, summary_dim, model=None):
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset))))),
+    (Subset(dataset, range(int(len(dataset)/200)))), #when testing during demo since it's more rapid
     [0.8, 0.2],
     generator=global_gen,
 )
-# for testing, a 15th of the dataset size
 
 
 ##################
@@ -204,22 +214,22 @@ if BEST_PARAMS is None:
                     train_set = Subset(gs_dataset, train_index)
                     test_set = Subset(gs_dataset, test_index)
 
-                    # get all items from the dataset in one pass
+                    # get all items from the dataset in one pass this is C++ optimized in the backend
                     # train_set[j] returns (param shape=(3,), obs shape=(20, 3, 3, 21) for betti)
                     all_params, all_obs = zip(*[train_set[j] for j in range(len(train_set))])
-                    all_params = torch.stack(all_params)  # (N, 3)  ex: (12000, 3)
-                    all_obs = torch.stack(all_obs)     # (N, 20, ...) ex (12000, 20, 3, 3, 21)
+                    all_params = torch.stack(all_params)  # (N, 3)  ex -> (12000, 3)
+                    all_obs = torch.stack(all_obs)     # (N, 20, dot dot dot) ex -> (12000, 20, 3, 3, 21)
 
                     #exxpand theta to match every noise realization
-                    N, n_noise = all_obs.shape[:2]  #N=12000, n_noise=20
+                    N, n_noise = all_obs.shape[:2]  #N=12000, n_noise=20 (i think?)
 
                     # unsquueeze adds a dimension so(12000, 3) -> (12000, 1, 3)
-                    # expand copies it 20 times so  (12000, 1, 3) -> (12000, 20, 3)
-                    # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3)
+                    # expand copies it 20 times so (12000, 1, 3) -> (12000, 20, 3)
+                    # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3) big array!
                     theta_train = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
 
                     #dlatten obs the same way
-                    # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21)
+                    # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21) (for betti, same logic for ps2d)
                     x_train = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
 
                     all_params, all_obs = zip(*[test_set[j] for j in range(len(test_set))])
@@ -383,22 +393,22 @@ with mlflow.start_run(run_name="Best model run"):
                 train_val_dataset, [0.8, 0.2], generator=gen
             )
 
-            # get all items from the dataset in one pass
+            # get all items from the dataset in one pass this is C++ optimized in the backend
             # train_set[j] returns (param shape=(3,), obs shape=(20, 3, 3, 21) for betti)
             all_params, all_obs = zip(*[train_set[j] for j in range(len(train_set))])
-            all_params = torch.stack(all_params)  # (N, 3)  ex: (12000, 3)
-            all_obs = torch.stack(all_obs)     # (N, 20, ...) ex (12000, 20, 3, 3, 21)
+            all_params = torch.stack(all_params)  # (N, 3)  ex -> (12000, 3)
+            all_obs = torch.stack(all_obs)     # (N, 20, dot dot dot) ex -> (12000, 20, 3, 3, 21)
 
             #exxpand theta to match every noise realization
-            N, n_noise = all_obs.shape[:2]  #N=12000, n_noise=20
+            N, n_noise = all_obs.shape[:2]  #N=12000, n_noise=20 (i think?)
 
             # unsquueeze adds a dimension so(12000, 3) -> (12000, 1, 3)
-            # expand copies it 20 times so  (12000, 1, 3) -> (12000, 20, 3)
-            # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3)
+            # expand copies it 20 times so (12000, 1, 3) -> (12000, 20, 3)
+            # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3) big array!
             theta_train = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
 
             #dlatten obs the same way
-            # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21)
+            # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21) (for betti, same logic for ps2d)
             x_train = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
 
             all_params, all_obs = zip(*[test_set[j] for j in range(len(test_set))])
@@ -440,7 +450,7 @@ with mlflow.start_run(run_name="Best model run"):
             neural_posterior = posterior_nn(
                 model=model,
                 embedding_net=embedding,
-                z_score_x="none" if data_type != "betti" else "independent",
+                z_score_x="none" if data_type != "betti" else "independent", #we train on raw obs the resnet for ps2d, dont want to mix and match
                 hidden_features=hidden_features,
                 num_transforms=num_transforms,
                 num_bins=num_bins,
@@ -859,7 +869,7 @@ with mlflow.start_run(run_name="Best model evaluation"):
         x_pp_std = x_pp.std(axis=0)
 
         frac_res = (x_obs - x_pp_mean) / (np.abs(x_pp_mean) + 1e-10)  # residulas
-        z_res = (x_obs - x_pp_mean) / (x_pp_std + 1e-10)  # z residuals
+        z_res = (x_obs - x_pp_mean) / (x_pp_std + 1e-10)  # z score
 
         low_ppc = min(x_obs.min(), x_pp_mean.min())
         high_ppc = max(x_obs.max(), x_pp_mean.max())

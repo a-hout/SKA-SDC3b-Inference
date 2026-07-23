@@ -28,7 +28,6 @@ class BettiCompressor(nn.Module):
         )
 
     def forward(self, x):
-        # we don't average out the noise, but we pick a random noise in data loader
         # shape (batch, 3, 3, 21)
         x = x.flatten(start_dim=1)  # shape (batch, 189)
         x = self.fc(

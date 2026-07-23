@@ -1,8 +1,19 @@
-import os
+"""
+This script will analyze theta by
 
+1. Left top panel -> the log histogram of theta mean (across all redshift bins) to have an idea on the prior
+2. Right top panel -> theta means sorted per index and graphed where the +-1 sigma percentiles are
+3. Left bottom panel -> boxplot per redshift bin to see variance
+4. Right bottom panel -> the trajectory for top 10 lowest and highest means
+
+In addition, there is a bit of code to analyze the density curves for each redshift bin
+"""
+
+import os
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
+import pandas as pd
+import seaborn as sns
 from dataloader.data_type_loader import DataDataset
 
 OUTPUT_DIR = "plots/dataset_exploration"
@@ -27,7 +38,7 @@ datasets_to_explore = {
 }
 
 for name, config in datasets_to_explore.items():
-    print(f"Analysing dataset theta")
+    print("Analysing dataset theta")
     try:
         dataset_cls = config["loader_cls"]()
         dataset = dataset_cls(name, device=device)
@@ -44,7 +55,7 @@ for name, config in datasets_to_explore.items():
     num_samples, num_bins = theta.shape
     print(f"Dataset shape: {num_samples} samples, {num_bins} redshift bins.")
 
-    # Print Text Diagnostics to Terminal
+    # Print diagnostics of statistics
     print("\nSummary statistics (mean parameter across bins)")
     print(f"Absolute min: {theta_mean.min().item():.5f}")
     print(f"16th percentile: {torch.quantile(theta_mean, 0.16).item():.5f}")
@@ -70,7 +81,7 @@ for name, config in datasets_to_explore.items():
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle("Theta analysis", fontsize=16)
 
-    # Panel 1 is th log-Scaled histogram of the mean
+    # Panel 1 is th log-scaled histogram of the mean
     axes[0, 0].hist(
         theta_mean.numpy(),
         bins=100,
@@ -173,7 +184,32 @@ for name, config in datasets_to_explore.items():
     axes[1, 1].legend()
     axes[1, 1].grid(True, alpha=0.3)
 
+    # KDE density curve plot
+
     fig_path = os.path.join(OUTPUT_DIR, "theta_analysis.png")
+    plt.tight_layout()
+    plt.savefig(fig_path)
+    plt.close()
+
+    bin_labels = [f"xHI z{b + 1}" for b in range(num_bins)]
+    df_theta = pd.DataFrame(theta.numpy(), columns=bin_labels)
+
+    plt.figure(figsize=(8, 6))
+    ax = sns.kdeplot(
+        data=df_theta,
+        clip=(0, 1),
+        fill=True,
+        alpha=0.25,
+        common_norm=False,
+        palette="rocket_r",
+    )
+
+    plt.title("xHI density distribution per redshift bin", fontsize=14)
+    plt.xlabel("xHI value")
+    plt.ylabel("Density")
+    plt.grid(True, alpha=0.3)
+
+    fig_path = os.path.join(OUTPUT_DIR, "theta_kde_per_bin.png")
     plt.tight_layout()
     plt.savefig(fig_path)
     plt.close()

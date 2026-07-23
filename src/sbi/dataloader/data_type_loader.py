@@ -1,3 +1,10 @@
+"""
+This is a generic data loader for both betti and ps2d, which will fetch the respective observations (luckily they have about the same-ish shape)
+and also fetch the corresponding theta parameter
+
+If need be, the 1000h can be changed to 100h since the dataset has that integration observation time as well
+"""
+
 import numpy as np
 import torch
 from torch.utils.data.dataset import Dataset
@@ -21,9 +28,6 @@ class DataDataset(Dataset):
     def __getitem__(self, idx):
         param = self.params[idx]
         obs = self.observables[idx]
-        # random_noise = np.random.randint(
-        #    0, obs.shape[0]
-        # )  # get index of random noise realisation (between 0 and 21)
 
         return (
             torch.tensor(
@@ -36,26 +40,37 @@ class DataDataset(Dataset):
 
 
 if __name__ == "__main__":
-    dataset = DataDataset("ps2d")
-    theta, obs = dataset[:]
-    _, obs = dataset[0]
-    print("theta and obs shape:", theta.shape, obs.shape)  # here expect
-    N, N_noise, N_freqs = obs.shape[0], obs.shape[1], obs.shape[2]
-    dim_data = obs.shape[3:]
-    dim_out = theta.shape[0]
-    print("N", N)
-    print("N_noise", N_noise)
-    print("N_freqs", N_freqs)
-    print("dim_data", dim_data)
-    print("dim_out", dim_out)
+    for data_type in ["ps2d", "betti"]:
+        print(f" SURVEYING DATASET: {data_type.upper()}")
 
-    true_thetas = torch.tensor(dataset.params[:, 0, :], device=dataset.device)
-    print("True global theta shape:", true_thetas.shape)  # Should be (15951, 3)
+        #load dataset object
+        dataset = DataDataset(data_type)
 
-    print("True global theta shape:", true_thetas.shape)  # Should be (15951, 3)
+        #acess  numpy arrays directly
+        obs = dataset.observables# (N, 20, 3, 10, 10) or (N, 20, 3, 3, 21)
+        params = dataset.params[:, 0, :] #(N, 3)
 
-    theta_low = true_thetas.min(dim=0).values.detach().clone()
-    theta_high = true_thetas.max(dim=0).values.detach().clone()
+        print(f"Observables shape:\t{obs.shape}")
+        print(f"Params shape:\t{params.shape}")
 
-    print("Global low: ", theta_low)
-    print("Global high: ", theta_high)
+        # global observational statistics
+        print(f"Global min:\t{obs.min():12.4f}")
+        print(f"Global max:\t{obs.max():12.4f}")
+        print(f"Global mean:\t{obs.mean():12.4f}")
+        print(f"Global std:\t{obs.std():12.4f}")
+        print(f"Has NaNs / infs:\t{np.isnan(obs).any() or np.isinf(obs).any()}")
+
+        # scenario breakdown (low, mid, high based on theta values)
+        # we group by the mean parameter value across redshift bins
+        mean_theta_per_sample = params.mean(axis=1)
+        p16, p84 = np.percentile(mean_theta_per_sample, [16, 84])
+
+        low_mask = mean_theta_per_sample <= p16
+        mid_mask = (mean_theta_per_sample > p16) & (mean_theta_per_sample < p84)
+        high_mask = mean_theta_per_sample >= p84
+
+        print("Scenario observational statistics:")
+        print(f"  [LOW  (fast)]  Min: {obs[low_mask].min():10.2f} | Max: {obs[low_mask].max():10.2f} | Mean: {obs[low_mask].mean():10.2f}")
+        print(f"  [MID  (avg) ]  Min: {obs[mid_mask].min():10.2f} | Max: {obs[mid_mask].max():10.2f} | Mean: {obs[mid_mask].mean():10.2f}")
+        print(f"  [HIGH (slow)]  Min: {obs[high_mask].min():10.2f} | Max: {obs[high_mask].max():10.2f} | Mean: {obs[high_mask].mean():10.2f}")
+        print("\n")
