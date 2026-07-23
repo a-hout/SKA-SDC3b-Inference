@@ -1,10 +1,16 @@
 Datasets are too heavy, contact any of these:
 
 * Emmanuel De Salis
-* Massimo De Santis
+* Nicolas Cerardi
+* Michele Bianco
 * Alex Houttuin
 
 and ask for these specific datasets:
 
-* `pk_128_train_250325`
-* `pk_128_train_250325_noise`
+* sbi2_y.npy
+* 100 hour integration:
+  * sbi2_betti_100h.npy
+  * sbi2_ps2d_100h.npy
+* 1000 hour integration:
+  * sbi2_betti_1000h.npy
+  * sbi2_ps2d_1000h.npy
