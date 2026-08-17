@@ -242,6 +242,8 @@ if BEST_PARAMS is None:
 
                     embedding = None
 
+                    batch_size = 512
+
                     ### train a resnet model for the trial
                     if data_type in ["ps2d", "ps2d+betti"]:
                         print("starting training for resnet!!!")
@@ -261,6 +263,7 @@ if BEST_PARAMS is None:
                             x_test_img,
                             theta_train,
                             theta_test,
+                            batch_size,
                             device,
                         )
 
@@ -288,7 +291,7 @@ if BEST_PARAMS is None:
                     density_estimator = trainer.append_simulations(
                         theta_train, x_train
                     ).train(
-                        training_batch_size=4096,
+                        training_batch_size=batch_size,
                         show_train_summary=True,
                         learning_rate=learning_rate,
                     )
