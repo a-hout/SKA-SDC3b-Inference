@@ -12,10 +12,10 @@ from torchvision.models import (
 )
 
 
-def train_resnet(x_train_img, x_test_img, theta_train, theta_test, device):
+def train_resnet(x_train_img, x_test_img, theta_train, theta_test, batch_size, device):
     resnet = PS2DResNet()
 
-    batch_size = 512 #bad habit, should be passed in parameters to be the same as the normalizing flow
+    #batch_size = 512 #bad habit, should be passed in parameters to be the same as the normalizing flow
     max_epochs = 300
 
     criterion = torch.nn.MSELoss()  # mean square error loss for the regression task
@@ -27,7 +27,7 @@ def train_resnet(x_train_img, x_test_img, theta_train, theta_test, device):
     val_dataset = TensorDataset(
         x_test_img, theta_test
     )  # test is acting as val here in this case
-    train_laoder = DataLoader(
+    train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True
     )  # shuffling
     val_loader = DataLoader(

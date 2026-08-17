@@ -147,7 +147,7 @@ def get_compressor(data_type, summary_dim, model=None):
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset)/200)))), #when testing during demo since it's more rapid
+    (Subset(dataset, range(int(len(dataset))))), #when testing during demo since it's more rapid
     [0.8, 0.2],
     generator=global_gen,
 )
@@ -370,7 +370,7 @@ tarp_fig, tarp_axs = plt.subplots(
 )  # 1 plot per one of the 30 models
 
 with mlflow.start_run(run_name="Best model run"):
-    for i in range(30):  # testing with 5, producition with 30
+    for i in range(5):  # testing with 5, producition with 30
         model_info["number"].append(i + 1)
         gen = torch.manual_seed(i + 1)
 
@@ -421,6 +421,8 @@ with mlflow.start_run(run_name="Best model run"):
 
             embedding = None
 
+            batch_size = 512
+
             ### train a resnet model for the trial
             if data_type in ["ps2d", "ps2d+betti"]:
                 print("starting training for resnet!!!")
@@ -440,6 +442,7 @@ with mlflow.start_run(run_name="Best model run"):
                     x_test_img,
                     theta_train,
                     theta_test,
+                    batch_size,
                     device,
                 )
 
@@ -464,7 +467,7 @@ with mlflow.start_run(run_name="Best model run"):
             )
 
             density_estimator = trainer.append_simulations(theta_train, x_train).train(
-                training_batch_size=4096,
+                training_batch_size=batch_size,
                 show_train_summary=True,
                 learning_rate=learning_rate,
             )
@@ -536,8 +539,9 @@ with mlflow.start_run(run_name="Best model run"):
             model_info["posteriors"].append((i + 1, posterior))
 
             del trainer, density_estimator, neural_posterior, embedding
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
     # best model is model with best mean tarp
     tarp_sorted = sorted(model_info["tarp_values"], key=lambda x: x[1], reverse=True)

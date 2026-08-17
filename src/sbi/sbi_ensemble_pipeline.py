@@ -333,8 +333,9 @@ with mlflow.start_run(run_name="Best ensemble model run"):
             model_info["posteriors"].append((i + 1, posterior))
 
             del trainer, density_estimator, neural_posterior, embedding
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
     posteriors = dict(model_info["posteriors"])
     tarp_sorted = sorted(model_info["tarp_values"], key=lambda x: x[1], reverse=True)
