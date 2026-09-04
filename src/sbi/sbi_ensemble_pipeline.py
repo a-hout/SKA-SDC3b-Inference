@@ -220,6 +220,8 @@ with mlflow.start_run(run_name="Best ensemble model run"):
 
             embedding = None
 
+            batch_size = 512
+
             ### train a resnet model for the trial
             if data_type in ["ps2d", "ps2d+betti"]:
                 print("starting training for resnet!!!")
@@ -235,7 +237,7 @@ with mlflow.start_run(run_name="Best ensemble model run"):
                     x_train_img = x_train
                     x_test_img = x_test
                 resnet = ps2d_resnet.train_resnet(
-                    x_train_img, x_test_img, theta_train, theta_test, device
+                    x_train_img, x_test_img, theta_train, theta_test, batch_size, device
                 )
 
                 print("finished resnet training")
@@ -261,7 +263,7 @@ with mlflow.start_run(run_name="Best ensemble model run"):
             density_estimator = trainer.append_simulations(
                 theta_train, x_train
             ).train(
-                training_batch_size=4096,
+                training_batch_size=batch_size,
                 show_train_summary=True,
                 learning_rate=learning_rate,
             )
