@@ -1,21 +1,5 @@
 # SKA SDC3b Inference
-
-To do every time logging into the machine at lambda-0:
-
-if nothing running
-1. tmux new -s mlflow
-2. source .venv/bin/activate
-3. mlflow server --host 0.0.0.0 --port 8481 --cors-allowed-origins "*" --allowed-hosts "157.26.103.124:8481"
-4. ctrl+b and d (detach)
-5. tmux new -s "<data_type>
-6. python src/sbi/sbi_pipeline.py <data_type> [best_params_path]
-7. ctrl+b and d (detach)
-
-if something running
-1. tmux attach -t mlflow to see if it is still running
-2. ctrl+b and d (detach)
-3. tmux attach -t "<data_type> to check progression or see errors
-4. ctrl+b and d (detach)
+Check the report and appendices and the presentation for the full explanation.
 ## Technologies
 The models are implemented in Python 3.12.
 
