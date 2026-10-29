@@ -82,6 +82,7 @@ requests==2.34.2
 sbi==0.26.1
 scikit-learn==1.8.0
 scipy==1.16.3
+seaborn==0.13.2
 setuptools==81.0.0
 six==1.17.0
 skops==0.14.0
