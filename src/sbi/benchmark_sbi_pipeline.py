@@ -123,7 +123,7 @@ def get_compressor(data_type, summary_dim, model=None):
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset)*0.002)))), #when testing during demo since it's more rapid
+    (Subset(dataset, range(int(len(dataset)*0.001)))), #when testing during demo since it's more rapid
     [0.8, 0.2],
     generator=global_gen,
 )
@@ -342,7 +342,8 @@ if BEST_PARAMS is None:
 ##################
 # 3. 30-run
 ##################
-
+benchmark_total_run_time_start = time.time()
+benchmark_training = []
 benchmark_data_loading = []
 benchmark_tarp_20_realizations = [] #contains all the times for 20*30 TARPS
 benchmark_embedding = []
@@ -365,11 +366,11 @@ tarp_fig, tarp_axs = plt.subplots(
     6, 5, figsize=(20, 30)
 )  # 1 plot per one of the 30 models
 
-benchmark_training_total_time = time.time()
-
-
 with mlflow.start_run(run_name="Best model run"):
     for i in range(2):  # testing with 5, producition with 30
+
+        benchmark_training_time = time.time()
+
         model_info["number"].append(i + 1)
         gen = torch.manual_seed(i + 1)
 
@@ -437,11 +438,15 @@ with mlflow.start_run(run_name="Best model run"):
                 tracker=tracker,  # built in by sbi for the tracker with adapter
             )
 
+            benchmark_density_estimator_training_start = time.time()
             density_estimator = trainer.append_simulations(theta_train, x_train).train(
                 training_batch_size=batch_size,
                 show_train_summary=True,
                 learning_rate=learning_rate,
             )
+            print()
+            benchmark_density_estimator_training.append((time.time()-benchmark_density_estimator_training_start, trainer.summary["epochs_trained"][-1]))
+
 
             posterior = trainer.build_posterior(density_estimator)
 
@@ -464,6 +469,7 @@ with mlflow.start_run(run_name="Best model run"):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
+        benchmark_training.append(time.time()-benchmark_training_time)
 
     # best model is model with best mean tarp
     tarp_sorted = sorted(model_info["tarp_values"], key=lambda x: x[1], reverse=True)
@@ -507,17 +513,30 @@ with mlflow.start_run(run_name="Best model run"):
 
     mlflow.log_metric("best model number", best_num)
 
+benchmark_total_run_time = time.time() - benchmark_total_run_time_start
 data_loading_benchmark = benchmark_helper.data_loading_benchmark_measures(benchmark_data_loading)
 tarp_benchmark = benchmark_helper.tarp_benchmark_measures(benchmark_tarp_20_realizations)
+benchmark_training = np.array(benchmark_training)
+times, epochs = np.array(benchmark_density_estimator_training).T
 model_training_benchmark = {
     "training time": {
-
+        "total run time": float(benchmark_total_run_time), #including drawing figures and finding the best model
+        "total training time": float(benchmark_training.sum()), #not including the above
+        "average training time": float(benchmark_training.mean()),
+        "max training time": float(benchmark_training.max()),
+        "min training time": float(benchmark_training.min()),
     },
     "data loading": data_loading_benchmark,
     "embedding": ...,
-    "density estimator training":...,
+    "density estimator training":{ #not including data loading, embedding, tarp, etc.
+        "average training time": float(times.mean()),
+        "max training time": float(times.max()),
+        "min training time": float(times.min()),
+        "average training time per epoch": float((times/epochs).mean())
+    },
     "TARP": tarp_benchmark,
 }
+print(model_training_benchmark)
 
 tarp_dict = dict(model_info["tarp_values"])
 

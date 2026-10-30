@@ -61,8 +61,6 @@ def data_loading_benchmark_measures(benchmark_data_loading):
         "total time": float(benchmark_data_loading.sum()),
     },
 
-    pprint.pprint(data_loading_benchmarks, sort_dicts=False)
-
     return data_loading_benchmarks
 
 def tarp_benchmark(theta_test, x_test, posterior, benchmark_tarp_20_realizations: list):
@@ -136,7 +134,6 @@ def tarp_benchmark_measures(benchmark_tarp_20_realizations: list):
         "20 TARP total time": float(sum(benchmark_tarp_20_realizations)), #the total time spent TARPing
     }
 
-    pprint.pprint(tarp_benchmarks, sort_dicts=False)
     return tarp_benchmarks
 
 def save_benchmark(pipeline_type, data_type, benchmarks):
@@ -182,13 +179,14 @@ benchmarks = {
             "total gridsearching time",
         },
         "model training":{
-            "training time":{
-                "average time",
+            "training time": {
+                "total run time", #including drawing figures and finding the best model
+                "total training time", #not including the above
+                "average training time",
                 "max training time",
                 "min training time",
-                "total time", #to train all 30 models
             },
-            "data preparation":{
+            "data loading":{
                 "average load time",
                 "max load time",
                 "min load time",
@@ -204,8 +202,10 @@ benchmarks = {
                 },
             }
             "density estimator training":{
-                "average one model",
-                "max ",
+                "average training time",
+                "max training time",
+                "min training time",
+                "average training time per epoch",
             },
             "TARP":{
                 "fastest TARP realization",
