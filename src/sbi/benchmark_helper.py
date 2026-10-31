@@ -7,9 +7,18 @@ import time
 import signal
 import pprint
 import numpy as np
+import matplotlib.pyplot as plt
+
 import torch
 from torch.utils.data.dataset import Subset, random_split
 from sbi.diagnostics import check_tarp, run_tarp
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+from sklearn.neighbors import NearestNeighbors
+from tqdm import tqdm
+
+#---
+#model training
+#---
 
 def data_loading_benchmark(gen, train_val_dataset, benchmark_data_loading, full_realization=True):
     """
@@ -136,6 +145,232 @@ def tarp_benchmark_measures(benchmark_tarp_20_realizations: list):
 
     return tarp_benchmarks
 
+#---
+#model testing
+#---
+
+def test_data_loading_benchmark(global_test_dataset, full_realization=True):
+    benchmark_test_data = time.time()
+    if full_realization:
+        all_params, all_obs = zip(*[global_test_dataset[j] for j in range(len(global_test_dataset))])
+        all_params = torch.stack(all_params)
+        all_obs = torch.stack(all_obs)
+
+        N, n_noise = all_obs.shape[:2]
+        theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
+        x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+
+    return all_params, x_test, theta_test, n_noise, time.time() - benchmark_test_data
+
+def theta_pred_sampling_benchmark(x_test_metrics, best_posterior):
+    benchmark_theta_pred_samples = []
+
+    theta_pred = []
+    for x_obs in tqdm(x_test_metrics, desc="Sampling test observations"):
+        benchmark_start = time.time()
+        with torch.no_grad():
+            samples = best_posterior.sample(
+                (1000,),
+                x=x_obs,
+                show_progress_bars=False,
+            )  # 1000 samples from the approximate distribution given an observation
+
+            theta_pred.append(
+                samples.mean(dim=0).cpu()
+            )  # average (mean here) of the 1000 samples appended to prediction list
+
+            torch.cuda.empty_cache()
+        benchmark_theta_pred_samples.append(time.time()-benchmark_start)
+
+    theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
+
+    benchmark_theta_pred_samples = np.array(benchmark_theta_pred_samples)
+    benchmark_theta_pred_sampling = {
+        "average sampling time": float(benchmark_theta_pred_samples.mean()),
+        "max sampling time": float(benchmark_theta_pred_samples.max()),
+        "min sampling time": float(benchmark_theta_pred_samples.min()),
+        "total time sampling": float(benchmark_theta_pred_samples.sum()),
+    },
+
+    return theta_pred, benchmark_theta_pred_sampling
+
+def model_metrics_benchmarking(best_model_info, theta_test_metrics, theta_pred, best_val_loss):
+    total_time = time.time()
+    per_bin_benchmarks = []
+    best_model_info["metrics_per_bin"] = []
+    for bin_index in range(3):
+        per_bin_start = time.time()
+        r2_bin   = r2_score(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
+        rmse_bin = root_mean_squared_error(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
+        mae_bin  = mean_absolute_error(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
+        best_model_info["metrics_per_bin"].append((r2_bin, rmse_bin, mae_bin))
+        per_bin_benchmarks.append(time.time()-per_bin_start)
+
+    overall_start = time.time()
+    r2   = r2_score(theta_test_metrics, theta_pred)
+    rmse = root_mean_squared_error(theta_test_metrics, theta_pred)
+    mae  = mean_absolute_error(theta_test_metrics, theta_pred)
+    best_model_info["metrics"] = (r2, rmse, mae, best_val_loss)
+
+    per_bin_benchmarks = np.array(per_bin_benchmarks)
+    benchmark_model_metrics = {
+            "per bin":{
+                "average time": float(per_bin_benchmarks.mean()),
+                "max time": float(per_bin_benchmarks.max()),
+                "min time":float(per_bin_benchmarks.min()),
+                "total time":float(per_bin_benchmarks.sum()),
+            },
+            "overall metrics time": float(time.time()-overall_start),
+            "total metrics time":float(time.time()-total_time),
+        }
+    return best_model_info, r2, rmse, mae, benchmark_model_metrics
+
+def reionization_and_pairplots_benchmarking():
+    pass
+
+def uncertainty_benchmarking():
+    pass
+
+def global_tarp_benchmarking(x_test, theta_test, best_posterior):
+    benchmark_20_realizations = []
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Global TARP timed out")
+
+    global_tarp_curves = []
+    mean_global_pval = 0.0
+    successful_global_tarps = 0
+
+    for k in range(20):
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(600)  # 10 minutes
+
+        try:
+            benchmark_start = time.time()
+
+            num_tarp_samples = 500
+            tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
+
+            prior_samples = theta_test[tarp_index]
+            prior_predictives = x_test[tarp_index]
+
+            ecp, alpha = run_tarp(
+                prior_samples,
+                prior_predictives,
+                best_posterior,
+                references=None,
+                num_posterior_samples=1000,
+                use_batched_sampling=True,
+            )
+
+            _, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
+            signal.alarm(0)
+            benchmark_20_realizations.append(time.time()-benchmark_start)
+
+            mean_global_pval += ks_pval
+            successful_global_tarps += 1
+            global_tarp_curves.append((ecp.cpu().numpy(), alpha.cpu().numpy()))
+
+        except TimeoutError:
+            print(f"Global TARP realization {k + 1} timed out, skipping...")
+            continue
+
+    if successful_global_tarps > 0:
+        mean_global_pval /= successful_global_tarps
+
+    benchmark_20_realizations = np.array(benchmark_20_realizations)
+    benchmark_global_tarp = {
+        "20 TARP average time for one realization": float(benchmark_20_realizations.mean()),
+        "20 TARP max time": float(benchmark_20_realizations.max()),
+        "20 TARP min time": float(benchmark_20_realizations.min()),
+        "20 TARP total time": float(benchmark_20_realizations.sum()),
+    },
+
+    return mean_global_pval, global_tarp_curves, benchmark_global_tarp
+
+def ppc_benchmarking(x_test, all_params, low_index, mid_index, high_index, scenario_samples):
+    ppc_benchmark = []
+
+    benchmark_total_start = time.time()
+    x_test_np = x_test.cpu().numpy()
+    theta_unique = all_params.cpu().numpy()
+
+    nn_finder = NearestNeighbors(
+        n_neighbors=1
+    ).fit(
+        theta_unique
+    )  # we will be using the nearest theta instead of the simulator since we do not possess the latter
+
+    n_ppc = 400  # we will be looking up 400 thetas, to ensure to get the nearest (not guaranteed unless n_ppc is higher)
+    fig_ppc, axes_ppc = plt.subplots(1, 3, figsize=(20, 4))
+    ppc_metrics = {}
+
+    for ax, (name, index, color) in zip(
+        axes_ppc,
+        [
+            ("low", low_index, "red"),
+            ("mid", mid_index, "green"),
+            ("high", high_index, "blue"),
+        ],
+    ):
+        benchmark_start = time.time()
+        x_obs = x_test_np[
+            index
+        ]  # index gets the observations that are linked in the specific scenario
+        theta_p = scenario_samples[name][0][:n_ppc].numpy()  # shape (300, 3)
+
+        distances, nn_index = nn_finder.kneighbors(theta_p)
+        # (300, index observations)
+        x_pp_list = []
+        for index_pp in nn_index[:, 0]:
+            start_index = index_pp * 20
+            end_index = start_index + 20
+            x_pp_list.append(x_test_np[start_index:end_index].mean(axis=0))
+        x_pp = np.array(x_pp_list)
+        x_pp_mean = x_pp.mean(axis=0)
+        x_pp_std = x_pp.std(axis=0)
+
+        frac_res = (x_obs - x_pp_mean) / (np.abs(x_pp_mean) + 1e-10)  # residulas
+        z_res = (x_obs - x_pp_mean) / (x_pp_std + 1e-10)  # z score
+
+        low_ppc = min(x_obs.min(), x_pp_mean.min())
+        high_ppc = max(x_obs.max(), x_pp_mean.max())
+
+        ppc_benchmark.append(time.time() - benchmark_start)
+
+        ax.scatter(x_pp_mean, x_obs, color=color, alpha=0.3, s=5)
+        ax.plot([low_ppc, high_ppc], [low_ppc, high_ppc], "k--", alpha=0.6, linewidth=1)
+        ax.set_xlabel("mean(x_pp)")
+        ax.set_ylabel("x_obs")
+
+        ppc_metrics[name] = {
+            "mean_abs_z": float(np.abs(z_res).mean()),
+            "mean_abs_frac_residual": float(np.abs(frac_res).mean()),
+            "mean_nn_dist": float(distances.mean()),
+        }
+
+        ax.set_title(
+            f"{name}: mean |z|={ppc_metrics[name]['mean_abs_z']:.2f}"
+            f"  mean |fractional residual|={ppc_metrics[name]['mean_abs_frac_residual']:.2f}"
+        )
+
+    ppc_benchmark = np.array(ppc_benchmark)
+    benchmark_ppc = { #not including figure drawing
+        "low PPC time": float(ppc_benchmark[0]),
+        "mid PPC time": float(ppc_benchmark[1]),
+        "high PPC time": float(ppc_benchmark[2]),
+        "average PPC time": float(ppc_benchmark.mean()),
+        "min PPC time": float(ppc_benchmark.min()),
+        "max PPC time": float(ppc_benchmark.max()),
+        "total PPC time": float(time.time()-benchmark_total_start), #including initialization
+    },
+
+    return ppc_metrics, fig_ppc, benchmark_ppc
+
+
+
+#---
+#utility
+#---
 def save_benchmark(pipeline_type, data_type, benchmarks):
     """
     benchmarks should follow the structure found in the bottom of this script
@@ -148,12 +383,12 @@ def save_benchmark(pipeline_type, data_type, benchmarks):
 
     with open(f"benchmarks/{pipeline_type}-{data_type}-benchmark-{local_time.tm_mday}-{local_time.tm_hour}-{local_time.tm_min}.json", "w") as f: #timestamp at the end in case we want multiple benchmarks of the same pipeline/data
         json.dump(
-            {
-                benchmarks
-            },
+            benchmarks,
             f,
             indent=4,
         )
+
+    pprint.pprint(benchmarks)
 
 """
 TODO WIP, still need to discuss what is valuable to benchmark
@@ -192,15 +427,12 @@ benchmarks = {
                 "min load time",
                 "total time",
             },
-            "embedding":{
-                "betti":{ #only for betti
-                    "forward pass time"
-                },
-                "resnet":{ #only for ps2d and ps2d+betti
-                    "average epoch time",
-                    "total time",
-                },
-            }
+            "resnet": {
+                "total resnet training time",
+                "average resnet training time",
+                "max resnet training time",
+                "min resnet training time",
+            },
             "density estimator training":{
                 "average training time",
                 "max training time",
@@ -217,48 +449,27 @@ benchmarks = {
                 "20 TARP total time", #the total time spent TARPing
             },
         "model testing": {
-            "data preparation":{
-                "load time",
-            },
             "sampling theta_pred":{
-                "average sample time",
-                "max sample time",
-                "min sample time",
-                "total time",
+                "average sampling time",
+                "max sampling time",
+                "min sampling time",
+                "total time sampling",
             },
             "model metrics":{
                 "per bin":{
-                    "average load time",
-                    "max load time",
-                    "min load time",
+                    "average time",
+                    "max time",
+                    "min time",
                     "total time",
                 },
                 "overall metrics time",
+                "total metrics time",
             },
-            "reionization history and pairplots":{
-                "low time",
-                "mid time",
-                "high time",
-                "average time",
-                "min time",
-                "max time",
-                "total time",
-            },
-            "uncertainty":{
-                "low time",
-                "mid time",
-                "high time",
-                "average time",
-                "min time",
-                "max time",
-                "total time",
-            }
             "global TARP":{
                 "20 TARP min time",
                 "20 TARP max time",
                 "20 TARP average time for one realization",
                 "20 TARP total time",
-                "TARP draw figure time",
             },
             "PPC":{
                 "low PPC time",
@@ -269,6 +480,7 @@ benchmarks = {
                 "max PPC time",
                 "total PPC time",
             },
+            "data loading time",
             "total testing time",
         },
         "total pipeline time",

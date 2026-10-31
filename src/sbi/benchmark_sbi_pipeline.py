@@ -32,9 +32,7 @@ from sbi.inference import NPE
 from sbi.neural_nets import posterior_nn
 from sbi.utils import BoxUniform
 from scipy.stats import gaussian_kde
-from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import KFold
-from sklearn.neighbors import NearestNeighbors
 from torch.utils.data.dataset import Subset, random_split
 from tqdm import tqdm
 import time
@@ -47,6 +45,7 @@ import time
 benchmarks = {}
 benchmark_total_pipeline_time_start = time.time()
 
+pipeline_type = "singular"
 full_realization = True #true if all 20 realization, else we should be picking a random realization in dataloaders
 
 device = (
@@ -102,6 +101,16 @@ low = theta.min(dim=0).values.detach().clone()
 high = theta.max(dim=0).values.detach().clone()
 prior = BoxUniform(low=low, high=high, device=device) #have to watch out since NPE can have a bug where density prob is too close to prior bounds -> rejection smapling
 
+benchmarks["data"] = {
+    "data type": data_type,
+    "load type": "full realization" if full_realization else "random realization",
+    "shape of obs":0, #TODO
+    "number of obs":0, #TODO
+    "shape of theta":0, #TODO
+    "number of theta":0, #TODO
+    "pipeline": pipeline_type
+}
+
 
 def get_compressor(data_type, summary_dim, model=None):
     """
@@ -123,7 +132,7 @@ def get_compressor(data_type, summary_dim, model=None):
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset)*0.001)))), #when testing during demo since it's more rapid
+    (Subset(dataset, range(int(len(dataset)*0.002)))), #when testing during demo since it's more rapid
     [0.8, 0.2],
     generator=global_gen,
 )
@@ -367,7 +376,7 @@ tarp_fig, tarp_axs = plt.subplots(
 )  # 1 plot per one of the 30 models
 
 with mlflow.start_run(run_name="Best model run"):
-    for i in range(2):  # testing with 5, producition with 30
+    for i in range(3):  # testing with 5, producition with 30
 
         benchmark_training_time = time.time()
 
@@ -397,6 +406,7 @@ with mlflow.start_run(run_name="Best model run"):
 
             ### train a resnet model for the trial
             if data_type in ["ps2d", "ps2d+betti"]:
+                benchmark_resnet_start = time.time()
                 print("starting training for resnet!!!")
 
                 if data_type == "ps2d+betti":
@@ -417,7 +427,7 @@ with mlflow.start_run(run_name="Best model run"):
                     batch_size,
                     device,
                 )
-
+                benchmark_embedding.append(time.time() - benchmark_resnet_start)
                 print("finished resnet training")
                 embedding = get_compressor(data_type, summary_dim, model=resnet)
             if embedding is None:
@@ -517,6 +527,7 @@ benchmark_total_run_time = time.time() - benchmark_total_run_time_start
 data_loading_benchmark = benchmark_helper.data_loading_benchmark_measures(benchmark_data_loading)
 tarp_benchmark = benchmark_helper.tarp_benchmark_measures(benchmark_tarp_20_realizations)
 benchmark_training = np.array(benchmark_training)
+benchmark_embedding = np.array(benchmark_embedding)
 times, epochs = np.array(benchmark_density_estimator_training).T
 model_training_benchmark = {
     "training time": {
@@ -527,7 +538,6 @@ model_training_benchmark = {
         "min training time": float(benchmark_training.min()),
     },
     "data loading": data_loading_benchmark,
-    "embedding": ...,
     "density estimator training":{ #not including data loading, embedding, tarp, etc.
         "average training time": float(times.mean()),
         "max training time": float(times.max()),
@@ -536,6 +546,13 @@ model_training_benchmark = {
     },
     "TARP": tarp_benchmark,
 }
+if data_type in ["ps2d", "ps2d+betti"]:
+    model_training_benchmark["resnet"] = {
+        "total resnet training time": float(benchmark_embedding.sum()),
+        "average resnet training time": float(benchmark_embedding.mean()),
+        "max resnet training time": float(benchmark_embedding.max()),
+        "min resnet training time": float(benchmark_embedding.min()),
+    },
 print(model_training_benchmark)
 
 tarp_dict = dict(model_info["tarp_values"])
@@ -559,13 +576,9 @@ best_model_info = {}
 with mlflow.start_run(run_name="Best model evaluation"):
     tracker = MLflowAdapter(mlflow)
 
-    all_params, all_obs = zip(*[global_test_dataset[j] for j in range(len(global_test_dataset))])
-    all_params = torch.stack(all_params)
-    all_obs = torch.stack(all_obs)
+    benchmark_testing_start = time.time()
 
-    N, n_noise = all_obs.shape[:2]
-    theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
-    x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+    all_params, x_test, theta_test, n_noise, benchmark_test_data_loading = benchmark_helper.test_data_loading_benchmark(global_test_dataset, full_realization)
 
     theta_test_cpu = theta_test.cpu()
 
@@ -574,34 +587,9 @@ with mlflow.start_run(run_name="Best model evaluation"):
     x_test_metrics = x_test[metrics_indices]
     theta_test_metrics = theta_test_cpu[metrics_indices]
 
-    theta_pred = []
-    for x_obs in tqdm(x_test_metrics, desc="Sampling test observations"):
-        with torch.no_grad():
-            samples = best_posterior.sample(
-                (1000,),
-                x=x_obs,
-                show_progress_bars=False,
-            )  # 1000 samples from the approximate distribution given an observation
+    theta_pred, benchmark_theta_pred_sampling = benchmark_helper.theta_pred_sampling_benchmark(x_test_metrics, best_posterior)
 
-            theta_pred.append(
-                samples.mean(dim=0).cpu()
-            )  # average (mean here) of the 1000 samples appended to prediction list
-
-            torch.cuda.empty_cache()
-
-    theta_pred = torch.stack(theta_pred).cpu()  # back to cpu to convert to numpy
-
-    best_model_info["metrics_per_bin"] = []
-    for bin_index in range(3):
-        r2_bin   = r2_score(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
-        rmse_bin = root_mean_squared_error(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
-        mae_bin  = mean_absolute_error(theta_test_metrics[:, bin_index], theta_pred[:, bin_index])
-        best_model_info["metrics_per_bin"].append((r2_bin, rmse_bin, mae_bin))
-
-    r2   = r2_score(theta_test_metrics, theta_pred)
-    rmse = root_mean_squared_error(theta_test_metrics, theta_pred)
-    mae  = mean_absolute_error(theta_test_metrics, theta_pred)
-    best_model_info["metrics"] = (r2, rmse, mae, best_val_loss)
+    best_model_info, r2, rmse, mae, benchmark_model_metrics = benchmark_helper.model_metrics_benchmarking(best_model_info, theta_test_metrics, theta_pred, best_val_loss)
 
     # scenarios (low = fast, high = slow reionization)
     theta_mean = theta_test.cpu().mean(dim=1)  # mean across bins for each observation
@@ -729,46 +717,7 @@ with mlflow.start_run(run_name="Best model evaluation"):
     fig_pxz.savefig(f"models/sbi/{data_type}/pxz_plot.png")
 
     # tarp plot redo, since new test data
-    def timeout_handler(signum, frame):
-        raise TimeoutError("Global TARP timed out")
-
-    global_tarp_curves = []
-    mean_global_pval = 0.0
-    successful_global_tarps = 0
-
-    for k in range(20):
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(600)  # 10 minutes
-
-        try:
-            num_tarp_samples = 500
-            tarp_index = torch.randperm(len(theta_test))[:num_tarp_samples]
-
-            prior_samples = theta_test[tarp_index]
-            prior_predictives = x_test[tarp_index]
-
-            ecp, alpha = run_tarp(
-                prior_samples,
-                prior_predictives,
-                best_posterior,
-                references=None,
-                num_posterior_samples=1000,
-                use_batched_sampling=True,
-            )
-
-            atc, ks_pval = check_tarp(ecp.cpu(), alpha.cpu())
-            signal.alarm(0)
-
-            mean_global_pval += ks_pval
-            successful_global_tarps += 1
-            global_tarp_curves.append((ecp.cpu().numpy(), alpha.cpu().numpy()))
-
-        except TimeoutError:
-            print(f"Global TARP realization {k + 1} timed out, skipping...")
-            continue
-
-    if successful_global_tarps > 0:
-        mean_global_pval /= successful_global_tarps
+    mean_global_pval, global_tarp_curves, benchmark_global_tarp = benchmark_helper.global_tarp_benchmarking(x_test, theta_test, best_posterior)
 
     # get final global TARP plot
     tarp_eval_fig, tarp_eval_ax = plt.subplots(figsize=(6, 6))
@@ -787,63 +736,7 @@ with mlflow.start_run(run_name="Best model evaluation"):
     tracker.add_figure("global_tarp_plot", tarp_eval_fig)
 
     # PPC
-    x_test_np = x_test.cpu().numpy()
-    theta_unique = all_params.cpu().numpy()
-
-    nn_finder = NearestNeighbors(
-        n_neighbors=1
-    ).fit(
-        theta_unique
-    )  # we will be using the nearest theta instead of the simulator since we do not possess the latter
-
-    n_ppc = 400  # we will be looking up 400 thetas, to ensure to get the nearest (not guaranteed unless n_ppc is higher)
-    fig_ppc, axes_ppc = plt.subplots(1, 3, figsize=(20, 4))
-    ppc_metrics = {}
-
-    for ax, (name, index, color) in zip(
-        axes_ppc,
-        [
-            ("low", low_index, "red"),
-            ("mid", mid_index, "green"),
-            ("high", high_index, "blue"),
-        ],
-    ):
-        x_obs = x_test_np[
-            index
-        ]  # index gets the observations that are linked in the specific scenario
-        theta_p = scenario_samples[name][0][:n_ppc].numpy()  # shape (300, 3)
-
-        distances, nn_index = nn_finder.kneighbors(theta_p)
-        # (300, index observations)
-        x_pp_list = []
-        for index_pp in nn_index[:, 0]:
-            start_index = index_pp * 20
-            end_index = start_index + 20
-            x_pp_list.append(x_test_np[start_index:end_index].mean(axis=0))
-        x_pp = np.array(x_pp_list)
-        x_pp_mean = x_pp.mean(axis=0)
-        x_pp_std = x_pp.std(axis=0)
-
-        frac_res = (x_obs - x_pp_mean) / (np.abs(x_pp_mean) + 1e-10)  # residulas
-        z_res = (x_obs - x_pp_mean) / (x_pp_std + 1e-10)  # z score
-
-        low_ppc = min(x_obs.min(), x_pp_mean.min())
-        high_ppc = max(x_obs.max(), x_pp_mean.max())
-        ax.scatter(x_pp_mean, x_obs, color=color, alpha=0.3, s=5)
-        ax.plot([low_ppc, high_ppc], [low_ppc, high_ppc], "k--", alpha=0.6, linewidth=1)
-        ax.set_xlabel("mean(x_pp)")
-        ax.set_ylabel("x_obs")
-
-        ppc_metrics[name] = {
-            "mean_abs_z": float(np.abs(z_res).mean()),
-            "mean_abs_frac_residual": float(np.abs(frac_res).mean()),
-            "mean_nn_dist": float(distances.mean()),
-        }
-
-        ax.set_title(
-            f"{name}: mean |z|={ppc_metrics[name]['mean_abs_z']:.2f}"
-            f"  mean |fractional residual|={ppc_metrics[name]['mean_abs_frac_residual']:.2f}"
-        )
+    ppc_metrics, fig_ppc, benchmark_ppc = benchmark_helper.ppc_benchmarking(x_test, all_params, low_index, mid_index, high_index, scenario_samples)
 
     fig_ppc.suptitle("Posterior predictive check (KNN): x_obs vs x_pp")
     fig_ppc.savefig(f"models/sbi/{data_type}/ppc_plot.png")
@@ -904,8 +797,21 @@ with mlflow.start_run(run_name="Best model evaluation"):
     for name in ["low", "mid", "high"]:
         tracker.add_figure(f"pairplot_{name}_xHI", pairplot_figs[name])
 
+    model_testing_benchmark = {
+        "sampling theta_pred":benchmark_theta_pred_sampling,
+        "model metrics": benchmark_model_metrics,
+        "global TARP": benchmark_global_tarp,
+        "PPC": benchmark_ppc,
+        "data loading time": float(benchmark_test_data_loading),
+        "total testing time": float(time.time() - benchmark_testing_start),
+    }
+
 mlflow.end_run()
 
 #save benchmark results
-benchmarks["benchmarks"]["total pipeline time"] = time.time() - benchmark_total_pipeline_time_start
-benchmark_helper.save_benchmark("singular", data_type, benchmarks)
+benchmarks["benchmarks"] = {
+    "model training": model_training_benchmark,
+    "model testing": model_testing_benchmark,
+    "total pipeline time":float(time.time() - benchmark_total_pipeline_time_start)
+}
+benchmark_helper.save_benchmark(pipeline_type, data_type, benchmarks)
