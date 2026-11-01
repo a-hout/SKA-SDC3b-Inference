@@ -7,7 +7,6 @@ similar to the sbi_pipeline.py file but specific to benchmarking
 ##################
 import json
 import os
-import signal
 import sys
 from itertools import product
 
@@ -34,7 +33,6 @@ from sbi.utils import BoxUniform
 from scipy.stats import gaussian_kde
 from sklearn.model_selection import KFold
 from torch.utils.data.dataset import Subset, random_split
-from tqdm import tqdm
 import time
 
 ##################
@@ -61,7 +59,7 @@ try:
     data_type = sys.argv[1].lower().strip()
 except IndexError:
     print(
-        "Normal usage is: python src/sbi/sbi_pipeline.py <data_type> <optional best params path>"
+        "Normal usage is: python src/sbi/benchmark_sbi_pipeline.py <data_type> <optional best params path>"
     )
     exit(1)
 
@@ -104,10 +102,6 @@ prior = BoxUniform(low=low, high=high, device=device) #have to watch out since N
 benchmarks["data"] = {
     "data type": data_type,
     "load type": "full realization" if full_realization else "random realization",
-    "shape of obs":0, #TODO
-    "number of obs":0, #TODO
-    "shape of theta":0, #TODO
-    "number of theta":0, #TODO
     "pipeline": pipeline_type
 }
 

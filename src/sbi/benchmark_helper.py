@@ -397,22 +397,9 @@ benchmarks = {
     "data":{ #this block is to identify the data
         "data type": data_type, #ps2d, betti or ps2d+betti
         "load type", #full realization or random realization
-        "shape of obs", #shape of given data type's observation
-        "number of obs", #number of observations
-        "shape of theta", #shape of the theta parameter
-        "number of theta",
         "pipeline", #either singular or ensemble
     },
     "benchmarks":{
-        "gridsearching":{
-            "average time per parameter",
-            "max time for a parameter",
-            "min time for a parameter",
-            "average cv time",
-            "max cv time",
-            "min cv time",
-            "total gridsearching time",
-        },
         "model training":{
             "training time": {
                 "total run time", #including drawing figures and finding the best model
