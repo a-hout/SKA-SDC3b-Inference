@@ -225,12 +225,6 @@ def model_metrics_benchmarking(best_model_info, theta_test_metrics, theta_pred, 
         }
     return best_model_info, r2, rmse, mae, benchmark_model_metrics
 
-def reionization_and_pairplots_benchmarking():
-    pass
-
-def uncertainty_benchmarking():
-    pass
-
 def global_tarp_benchmarking(x_test, theta_test, best_posterior):
     benchmark_20_realizations = []
     def timeout_handler(signum, frame):

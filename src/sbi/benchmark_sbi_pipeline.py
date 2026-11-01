@@ -67,7 +67,10 @@ try:
     with open(sys.argv[2]) as f:  # load path with best model parameters
         BEST_PARAMS = json.load(f)["best_params"]
 except (IndexError, FileNotFoundError):
-    BEST_PARAMS = None
+    print(
+        "Normal usage is: python src/sbi/benchmark_sbi_pipeline.py <data_type> <best params path>"
+    )
+    exit(1)
 
 dataset = None
 
@@ -126,221 +129,10 @@ def get_compressor(data_type, summary_dim, model=None):
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset)*0.002)))), #when testing during demo since it's more rapid
+    (Subset(dataset, range(int(len(dataset))))), #when testing during demo since it's more rapid
     [0.8, 0.2],
     generator=global_gen,
 )
-
-##################
-# 2. gridsearching
-##################
-if BEST_PARAMS is None:
-
-    benchmark_gridsearching = { #init
-        "average time per parameter": 0,
-        "max time for a parameter": 0,
-        "min time for a parameter": 0,
-        "average cv time": 0,
-        "max cv time": 0,
-        "min cv time": 0,
-        "total gridsearching time": 0,
-    }
-    benchmark_gridsearching_total_gridsearching_time = time.time()
-
-    cv_data = {
-        "split_index": (),
-    }
-
-    gs_size = int(
-        0.2 * len(train_val_dataset)
-    )  # 20 percent of dataset for gridsearching, to speed it up
-    gs_indices = torch.randperm(len(train_val_dataset), generator=global_gen)[:gs_size]
-    gs_dataset = Subset(train_val_dataset, gs_indices)
-
-    global_best_mean_val_loss = float("inf")
-
-    # we will be using cross validation with k = 3 to train the posterior
-    for (
-        summary_dim,
-        model,
-        num_transforms,
-        hidden_features,
-        num_bins,
-        learning_rate,
-    ) in product(  # 2*2*2*2 = 16 runs -> *3 folds = 48 runs
-        [3, 16, 32],  # 3 (to narrow to 3 redshift ranges)
-        [
-            "nsf",
-        ],  # nsf may be slower and more prone to overfitting but could provide better results
-        [8],  # num transforms for control flow of model
-        [128],  # how big the hidden layers are (width of flow)
-        [10, 32],
-        [5e-4, 1e-4],  # learning rate
-    ):
-        combination_val_losses = []
-        combination_best = {}  # this is the best fold for a given gridsearch combination
-        with mlflow.start_run(
-            run_name=f"{model}_sd{summary_dim}_nbins{num_bins}_lr{learning_rate}"
-        ):
-            cv = KFold(n_splits=3, shuffle=True, random_state=831)
-            for fold, (train_index, test_index) in enumerate(
-                cv.split(range(len(gs_dataset)))
-            ):
-                with mlflow.start_run(run_name=f"fold_{fold + 1}", nested=True):
-                    tracker = MLflowAdapter(mlflow)
-
-                    mlflow.log_params(
-                        {
-                            "fold": fold + 1,
-                            "summary_dim": summary_dim,
-                            "model": model,
-                            "num_transforms": num_transforms,
-                            "hidden_features": hidden_features,
-                            "num_bins": num_bins,
-                            "learning_rate": learning_rate,
-                        }
-                    )
-
-                    train_set = Subset(gs_dataset, train_index)
-                    test_set = Subset(gs_dataset, test_index)
-
-                    # get all items from the dataset in one pass this is C++ optimized in the backend
-                    # train_set[j] returns (param shape=(3,), obs shape=(20, 3, 3, 21) for betti)
-                    all_params, all_obs = zip(*[train_set[j] for j in range(len(train_set))])
-                    all_params = torch.stack(all_params)  # (N, 3)  ex -> (12000, 3)
-                    all_obs = torch.stack(all_obs)     # (N, 20, dot dot dot) ex -> (12000, 20, 3, 3, 21)
-
-                    #exxpand theta to match every noise realization
-                    N, n_noise = all_obs.shape[:2]  #N=12000, n_noise=20 (i think?)
-
-                    # unsquueeze adds a dimension so(12000, 3) -> (12000, 1, 3)
-                    # expand copies it 20 times so (12000, 1, 3) -> (12000, 20, 3)
-                    # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3) big array!
-                    theta_train = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
-
-                    #dlatten obs the same way
-                    # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21) (for betti, same logic for ps2d)
-                    x_train = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
-
-                    all_params, all_obs = zip(*[test_set[j] for j in range(len(test_set))])
-                    all_params = torch.stack(all_params)
-                    all_obs = torch.stack(all_obs)
-
-                    N, n_noise = all_obs.shape[:2]
-                    theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
-                    x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
-
-                    embedding = None
-
-                    batch_size = 512
-
-                    ### train a resnet model for the trial
-                    if data_type in ["ps2d", "ps2d+betti"]:
-                        print("starting training for resnet!!!")
-
-                        if data_type == "ps2d+betti":
-                            x_train_img = x_train[:, :300].view(
-                                -1, 3, 10, 10
-                            )  # fit to number of samples and basic shape
-                            x_test_img = x_test[:, :300].view(
-                                -1, 3, 10, 10
-                            )  # fit to number of samples and basic shape
-                        else:
-                            x_train_img = x_train
-                            x_test_img = x_test
-                        resnet = ps2d_resnet.train_resnet(
-                            x_train_img,
-                            x_test_img,
-                            theta_train,
-                            theta_test,
-                            batch_size,
-                            device,
-                        )
-
-                        print("finished resnet training")
-                        embedding = get_compressor(data_type, summary_dim, model=resnet)
-                    if embedding is None:
-                        embedding = get_compressor(data_type, summary_dim)
-
-                    neural_posterior = posterior_nn(
-                        model=model,
-                        embedding_net=embedding,
-                        z_score_x="none" if data_type != "betti" else "independent",
-                        hidden_features=hidden_features,
-                        num_transforms=num_transforms,
-                        num_bins=num_bins,
-                    )
-
-                    trainer = NPE(
-                        density_estimator=neural_posterior,
-                        prior=prior,
-                        device=device,
-                        tracker=tracker,  # built in by sbi for the tracker with adapter
-                    )
-
-                    density_estimator = trainer.append_simulations(
-                        theta_train, x_train
-                    ).train(
-                        training_batch_size=batch_size,
-                        show_train_summary=True,
-                        learning_rate=learning_rate,
-                    )
-
-                    posterior = trainer.build_posterior(density_estimator)
-
-                    val_loss = trainer._summary["best_validation_loss"][0]
-                    mlflow.log_metric("val_loss", val_loss)
-                    combination_val_losses.append(val_loss)
-
-                    if not combination_best or val_loss < combination_best["val_loss"]:
-                        combination_best = {
-                            "val_loss": val_loss,
-                            "density_estimator": density_estimator,
-                            "posterior": posterior,
-                            "split_index": (train_index, test_index),
-                        }
-
-            # here we compare combinations by mean val_loss for folds
-            mean_val_loss = sum(combination_val_losses) / len(combination_val_losses)
-            mlflow.log_metric("mean_val_loss", mean_val_loss)  # log outside fold runs
-            mlflow.log_params(
-                {
-                    "summary_dim": summary_dim,
-                    "model": model,
-                    "num_transforms": num_transforms,
-                    "hidden_features": hidden_features,
-                    "num_bins": num_bins,
-                    "learning_rate": learning_rate,
-                }
-            )
-        if mean_val_loss < global_best_mean_val_loss:
-            global_best_mean_val_loss = mean_val_loss
-            cv_data["sbi_density_estimator"] = combination_best["density_estimator"]
-            cv_data["sbi_posterior"] = combination_best["posterior"]
-            cv_data["split_index"] = combination_best["split_index"]
-            cv_data["best_val_loss"] = combination_best["val_loss"]
-            cv_data["best_params"] = {
-                "summary_dim": summary_dim,
-                "model": model,
-                "num_transforms": num_transforms,
-                "hidden_features": hidden_features,
-                "num_bins": num_bins,
-                "learning_rate": learning_rate,
-            }
-    try:
-        print("making data type directory...")
-        os.mkdir(f"models/sbi/{data_type}/")
-    except OSError:
-        print("directory already exists.")
-    with open(f"models/sbi/{data_type}/best_params.json", "w") as f:
-        json.dump(
-            {
-                "best_params": cv_data["best_params"],
-            },
-            f,
-            indent=4,
-        )
-    BEST_PARAMS = cv_data["best_params"]
 
 ##################
 # 3. 30-run
@@ -370,7 +162,7 @@ tarp_fig, tarp_axs = plt.subplots(
 )  # 1 plot per one of the 30 models
 
 with mlflow.start_run(run_name="Best model run"):
-    for i in range(3):  # testing with 5, producition with 30
+    for i in range(30):  # testing with 5, producition with 30
 
         benchmark_training_time = time.time()
 

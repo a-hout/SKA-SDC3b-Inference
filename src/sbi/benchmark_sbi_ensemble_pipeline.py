@@ -129,7 +129,7 @@ def get_compressor(data_type, summary_dim, model=None):
 global_gen = torch.manual_seed(831)
 
 train_val_dataset, global_test_dataset = random_split(
-    (Subset(dataset, range(int(len(dataset)*0.002)))), #when testing during demo since it's more rapid
+    (Subset(dataset, range(int(len(dataset))))), #when testing during demo since it's more rapid
     [0.8, 0.2],
     generator=global_gen,
 )
@@ -162,7 +162,7 @@ tarp_fig, tarp_axs = plt.subplots(
 )  # 1 plot per one of the 30 models
 
 with mlflow.start_run(run_name="Best ensemble model run"):
-    for i in range(5):
+    for i in range(30):
         benchmark_training_time = time.time()
 
         model_info["number"].append(i + 1)
