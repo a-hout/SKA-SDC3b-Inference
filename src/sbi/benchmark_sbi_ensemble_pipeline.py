@@ -41,7 +41,7 @@ benchmarks = {}
 benchmark_total_pipeline_time_start = time.time()
 
 pipeline_type = "ensemble"
-full_realization = True #true if all 20 realization, else we should be picking a random realization in dataloaders
+full_realization = False #true if all 20 realization, else we should be picking a random realization in dataloaders
 
 device = (
     "cuda"

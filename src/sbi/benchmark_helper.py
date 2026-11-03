@@ -25,37 +25,35 @@ def data_loading_benchmark(gen, train_val_dataset, benchmark_data_loading, full_
     If full realization is set to false, then we randomly pick a realization TODO
     """
     benchmark_start = time.time()
-
-    if full_realization:
-        train_set, test_set = random_split(
-            train_val_dataset, [0.8, 0.2], generator=gen
-        )
-
+    def split(dataset, full_realization=True):
         # get all items from the dataset in one pass this is C++ optimized in the backend
         # train_set[j] returns (param shape=(3,), obs shape=(20, 3, 3, 21) for betti)
-        all_params, all_obs = zip(*[train_set[j] for j in range(len(train_set))])
+        all_params, all_obs = zip(*[dataset[j] for j in range(len(dataset))])
         all_params = torch.stack(all_params)  # (N, 3)  ex -> (12000, 3)
         all_obs = torch.stack(all_obs)     # (N, 20, dot dot dot) ex -> (12000, 20, 3, 3, 21)
 
         #exxpand theta to match every noise realization
         N, n_noise = all_obs.shape[:2]  #N=12000, n_noise=20 (i think?)
 
-        # unsquueeze adds a dimension so(12000, 3) -> (12000, 1, 3)
-        # expand copies it 20 times so (12000, 1, 3) -> (12000, 20, 3)
-        # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3) big array!
-        theta_train = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
+        if full_realization:
+            # unsquueeze adds a dimension so(12000, 3) -> (12000, 1, 3)
+            # expand copies it 20 times so (12000, 1, 3) -> (12000, 20, 3)
+            # reshpae flattens N*noise into one so (12000, 20, 3) -> (240000, 3) big array!
+            all_params = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
 
-        #dlatten obs the same way
-        # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21) (for betti, same logic for ps2d)
-        x_train = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+            #dlatten obs the same way
+            # (12000, 20, 3, 3, 21) -> (240000, 3, 3, 21) (for betti, same logic for ps2d)
+            all_obs = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+        else:
+            rand_int = torch.randint(n_noise, (N,), generator=gen)
+            all_obs = all_obs[torch.arange(N), rand_int] #random realizations
+        return all_params, all_obs
 
-        all_params, all_obs = zip(*[test_set[j] for j in range(len(test_set))])
-        all_params = torch.stack(all_params)
-        all_obs = torch.stack(all_obs)
-
-        N, n_noise = all_obs.shape[:2]
-        theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
-        x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+    train_set, test_set = random_split(
+        train_val_dataset, [0.8, 0.2], generator=gen
+    )
+    theta_train, x_train = split(train_set, full_realization)
+    theta_test, x_test = split(test_set, full_realization)
 
     benchmark_data_loading.append(time.time()-benchmark_start)
 
@@ -151,14 +149,14 @@ def tarp_benchmark_measures(benchmark_tarp_20_realizations: list):
 
 def test_data_loading_benchmark(global_test_dataset, full_realization=True):
     benchmark_test_data = time.time()
-    if full_realization:
-        all_params, all_obs = zip(*[global_test_dataset[j] for j in range(len(global_test_dataset))])
-        all_params = torch.stack(all_params)
-        all_obs = torch.stack(all_obs)
+    #if full_realization:
+    all_params, all_obs = zip(*[global_test_dataset[j] for j in range(len(global_test_dataset))])
+    all_params = torch.stack(all_params)
+    all_obs = torch.stack(all_obs)
 
-        N, n_noise = all_obs.shape[:2]
-        theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
-        x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
+    N, n_noise = all_obs.shape[:2]
+    theta_test = all_params.unsqueeze(1).expand(N, n_noise, -1).reshape(N * n_noise, -1)
+    x_test = all_obs.reshape(N * n_noise, *all_obs.shape[2:])
 
     return all_params, x_test, theta_test, n_noise, time.time() - benchmark_test_data
 
