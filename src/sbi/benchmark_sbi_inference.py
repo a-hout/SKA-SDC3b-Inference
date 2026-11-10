@@ -4,15 +4,17 @@ script to load a posterior and run inference on it with new observations
 import benchmark_helper
 import torch
 import sys
+import time
 import numpy as np
 from sbi.inference import DirectPosterior
+from tqdm import tqdm
 
 
 device = (
     "cuda"
     if torch.cuda.is_available()
-    else "mps"
-    if torch.mps.is_available()
+    #else "mps"
+    #if torch.mps.is_available()
     else "cpu"
 )
 _ = torch.manual_seed(831) #random number for random generator
@@ -60,13 +62,34 @@ posterior = torch.load(
     weights_only=False,
     map_location="cpu",
 )
-x_test = np.reshape(np.loadtxt("datasets/mock_ps2d_obs.txt"), (-1, 3, 10, 10))
-print(x_test.shape)
-#shape = (3, 10, 10) if OBS_TYPE=="ps2d" else (3, 3, 21) if OBS_TYPE=="betti" else (3, 10, 10)
-#x_test = np.random.rand(10, shape[0], shape[1], shape[2]) #load observations in correct format ...? how
-#x_test = torch.Tensor(x_test).to(device) maybe only with cuda
+
+shape = (3, 10, 10) if OBS_TYPE=="ps2d" else (3, 3, 21) # if OBS_TYPE=="betti" else (3, 10, 10)
+x_test = np.reshape(np.loadtxt(OBS_PATH), (-1, shape[0], shape[1], shape[2]))
+x_test = torch.as_tensor(x_test, dtype=torch.float32, device=device)
+
+bench_batch = {}
+batch_size_list = [16, 32, 64, 128, 256]
+for batch_size in batch_size_list:
+    theta_pred = []
+    bench_start = time.time()
+    with torch.no_grad():
+        for i in tqdm(range(0, len(x_test), batch_size), desc="Sampling test observations"):
+            x_batch = x_test[i:i + batch_size]
+            samples = posterior.sample_batched(
+                (1000,),
+                x=x_batch,
+                show_progress_bars=False,
+            )
+            theta_pred.append(samples.mean(dim=0).cpu())
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+    theta_pred = torch.cat(theta_pred)
+    bench_batch[batch_size] = time.time() - bench_start
 
 theta_pred, benchmark_theta_pred_sampling = benchmark_helper.theta_pred_sampling_benchmark(x_test, posterior)
+
 theta_pred = theta_pred.numpy()
 mean = theta_pred.mean(axis=0)
 max = theta_pred.max(axis=0)
@@ -77,12 +100,12 @@ print(f"{'-'*120}")
 for max_i, mean_i, min_i, bin in zip(max, mean, min, ["low", "mid", "high"]):
     print(f"For {bin} reionization, \tin terms of xHI presence, there is a minimum of {min_i*100:.2f}%, a mean of {mean_i*100:.2f}%, and a maximum of {max_i*100:.2f}%")
 print(f"{'-'*120}")
-print(f"Time to infer: {benchmark_theta_pred_sampling[0]["total time sampling"]}")
+print(f"Time to infer batched sampling: {bench_batch}")
+print(f"Time to infer sampling per obs: {benchmark_theta_pred_sampling[0]["total time sampling"]}")
 
 """
-for _ in range(3):
+for _ in range(10):
     for _ in range(3):
         for _ in range(10):
-            for _ in range(10):
                 print(f"{[float(rando) for rando in np.random.rand(10)]}")
 """
