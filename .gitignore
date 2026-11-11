@@ -1,4 +1,6 @@
-datasets/*
+datasets/betti
+datasets/ps2d
+datasets/*.npy
 
 mlflow.db
 __pycache__
