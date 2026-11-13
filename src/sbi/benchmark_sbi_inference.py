@@ -137,25 +137,26 @@ if __name__ == "__main__":
     obs_len = 1000
     OBS_TYPE = ["ps2d", "betti", "ps2d+betti"]
 
-    benchmarks = {"ps2d": {},"betti": {},"ps2d+betti": {},}
+    for _ in range(5):
+        benchmarks = {"ps2d": {},"betti": {},"ps2d+betti": {},}
 
-    for data_type in OBS_TYPE:
-        benchmarks[data_type]["singular"] = infer_parameters(data_type, OBS_PATH[0] if data_type=="ps2d" else OBS_PATH[1] if data_type=="betti" else OBS_PATH, f"models/sbi/{data_type}/best_posterior.pt")
-        benchmarks[data_type]["ensemble"] = infer_parameters(data_type, OBS_PATH[0] if data_type=="ps2d" else OBS_PATH[1] if data_type=="betti" else OBS_PATH, f"models/ensemble-sbi/{data_type}/best_posterior.pt")
+        for data_type in OBS_TYPE:
+            benchmarks[data_type]["singular"] = infer_parameters(data_type, OBS_PATH[0] if data_type=="ps2d" else OBS_PATH[1] if data_type=="betti" else OBS_PATH, f"models/sbi/{data_type}/best_posterior.pt")
+            benchmarks[data_type]["ensemble"] = infer_parameters(data_type, OBS_PATH[0] if data_type=="ps2d" else OBS_PATH[1] if data_type=="betti" else OBS_PATH, f"models/ensemble-sbi/{data_type}/best_posterior.pt")
 
 
-    local_time = time.localtime() #to get day-hour-min
-    if not os.path.isdir("benchmarks"):
-        os.mkdir("benchmarks")
+        local_time = time.localtime() #to get day-hour-min
+        if not os.path.isdir("benchmarks"):
+            os.mkdir("benchmarks")
 
-    with open(f"benchmarks/{device}-inferring-{obs_len}-obs-benchmark-{local_time.tm_mday}-{local_time.tm_hour}-{local_time.tm_min}.json", "w") as f: #timestamp at the end in case we want multiple benchmarks of the same pipeline/data
-        json.dump(
-            benchmarks,
-            f,
-            indent=4,
-        )
+        with open(f"benchmarks/{device}-inferring-{obs_len}-obs-benchmark-{local_time.tm_mday}-{local_time.tm_hour}-{local_time.tm_min}.json", "w") as f: #timestamp at the end in case we want multiple benchmarks of the same pipeline/data
+            json.dump(
+                benchmarks,
+                f,
+                indent=4,
+            )
 
-    pprint(benchmarks)
+        pprint(benchmarks)
     """
     betti random mock observations
     for _ in range(100):
