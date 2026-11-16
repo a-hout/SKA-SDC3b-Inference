@@ -131,60 +131,66 @@ def inferrence_analysis(cpu_json, cuda_json):
     #cpu
     print("CPU")
     mult_list_overall = []
+    time_list = []
     cpu_data = cpu_json[0]
     for data_type in ["ps2d", "betti", "ps2d+betti"]:
         for pipeline in ["singular", "ensemble"]:
                 mean_values = np.mean([np.array(list(cpu_json[i][data_type][pipeline].values())) for i in range(len(cpu_json))], axis=0)
                 cpu_data[data_type][pipeline] = dict(zip(batches, mean_values))
                 print(f"\n\n{data_type} for the {pipeline} pipeline,")
-                print("\nABSOLUTE SIZE \tRELATIVE SIZE\tMULTIPLICATOR")
+                print("\nABSOLUTE SIZE \tRELATIVE SIZE\tMULTIPLICATOR\tINFERENCE TIME")
                 mult_list = []
-                for batch, mult in zip(batches, mean_values[0]/mean_values):
+                for batch, mult, time in zip(batches, mean_values[0]/mean_values, mean_values):
                     mult_list.append(mult)
                     if batch=='10':
-                        print(f"{40*'-'}")
-                    print(f"{batch}\t\t\t\t{(float(batch)/1000*100):.2f}%\t\t\t {mult:.1f}x")
-                    #print(f"batch size {batch}/{int((float(batch)/1000)*100):.2f}%:\t {mult:.1f}x")
+                        print(f"{62*'-'}")
+                    print(f"{batch}\t\t\t\t{(float(batch)/1000*100):.2f}%\t\t\t{mult:.1f}x\t\t\t{time:.1f}s")
                 mult_list = np.array(mult_list)
                 print("\nstatistics,")
                 print(f"Mean multiplicator: {np.mean(mult_list):.1f}x")
                 print(f"Std multiplicator: {np.std(mult_list):.1f}x")
+                print(f"Mean inference time: {np.mean(mean_values):.1f}s")
                 mult_list_overall.append(mult_list)
+                time_list.append(mean_values)
 
     mult_list_overall = np.array(mult_list_overall)
     print("\n\nGeneral statistics,")
     print(f"Singular pipeline overall multiplicator mean: {np.mean(mult_list_overall[0::2]):.1f}x")
     print(f"Ensemble pipeline overall multiplicator mean: {np.mean(mult_list_overall[1::2]):.1f}x")
     print(f"Overal multiplicator mean: {np.mean(mult_list_overall):.1f}x")
+    print(f"Overal inference time mean: {np.mean(np.array(time_list)):.1f}s")
 
     #cuda
     print("\n\n\nCUDA")
     cuda_data = cuda_json[0]
     mult_list_overall = []
+    time_list = []
     for data_type in ["ps2d", "betti", "ps2d+betti"]:
         for pipeline in ["singular", "ensemble"]:
                 mean_values = np.mean([np.array(list(cuda_json[i][data_type][pipeline].values())) for i in range(len(cuda_json))], axis=0)
                 cuda_data[data_type][pipeline] = dict(zip(batches, mean_values))
                 print(f"\n\n{data_type} for the {pipeline} pipeline,")
-                print("\nABSOLUTE SIZE \tRELATIVE SIZE\tMULTIPLICATOR")
+                print("\nABSOLUTE SIZE \tRELATIVE SIZE\tMULTIPLICATOR\tINFERENCE TIME")
                 mult_list = []
-                for batch, mult in zip(batches, mean_values[0]/mean_values):
+                for batch, mult, time in zip(batches, mean_values[0]/mean_values, mean_values):
                     mult_list.append(mult)
                     if batch=='10':
-                        print(f"{40*'-'}")
-                    print(f"{batch}\t\t\t\t{(float(batch)/1000*100):.2f}%\t\t\t {mult:.1f}x")
-                    #print(f"batch size {batch}/{int((float(batch)/1000)*100):.2f}%:\t {mult:.1f}x")
+                        print(f"{62*'-'}")
+                    print(f"{batch}\t\t\t\t{(float(batch)/1000*100):.2f}%\t\t\t{mult:.1f}x\t\t\t{time:.1f}s")
                 mult_list = np.array(mult_list)
                 print("\nstatistics,")
                 print(f"Mean multiplicator: {np.mean(mult_list):.1f}x")
                 print(f"Std multiplicator: {np.std(mult_list):.1f}x")
+                print(f"Mean inference time: {np.mean(mean_values):.1f}s")
                 mult_list_overall.append(mult_list)
+                time_list.append(mean_values)
 
     mult_list_overall = np.array(mult_list_overall)
     print("\n\nGeneral statistics,")
     print(f"Singular pipeline overall multiplicator mean: {np.mean(mult_list_overall[0::2]):.1f}x")
     print(f"Ensemble pipeline overall multiplicator mean: {np.mean(mult_list_overall[1::2]):.1f}x")
     print(f"Overal multiplicator mean: {np.mean(mult_list_overall):.1f}x")
+    print(f"Overal inference time mean: {np.mean(np.array(time_list)):.1f}s")
 
 
 if __name__ == "__main__":

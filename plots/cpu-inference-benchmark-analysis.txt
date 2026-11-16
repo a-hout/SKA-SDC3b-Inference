@@ -1,130 +1,137 @@
 ps2d for the singular pipeline,
 
-ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
-1				0.10%			 1.0x
-16				1.60%			 1.9x
-32				3.20%			 2.3x
-64				6.40%			 2.4x
-128				12.80%			 2.4x
-256				25.60%			 1.8x
-----------------------------------------
-10				1.00%			 3.0x
-50				5.00%			 2.4x
-100				10.00%			 2.4x
-250				25.00%			 1.8x
-500				50.00%			 1.1x
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR	INFERENCE TIME
+1				0.10%			1.0x			25.4s
+16				1.60%			1.9x			13.1s
+32				3.20%			2.3x			11.0s
+64				6.40%			2.4x			10.5s
+128				12.80%			2.4x			10.7s
+256				25.60%			1.8x			14.4s
+--------------------------------------------------------------
+10				1.00%			3.0x			8.5s
+50				5.00%			2.4x			10.7s
+100				10.00%			2.4x			10.4s
+250				25.00%			1.8x			14.3s
+500				50.00%			1.1x			22.5s
 
 statistics,
 Mean multiplicator: 2.1x
 Std multiplicator: 0.6x
+Mean inference time: 13.8s
 
 
 ps2d for the ensemble pipeline,
 
-ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
-1				0.10%			 1.0x
-16				1.60%			 1.5x
-32				3.20%			 2.0x
-64				6.40%			 2.3x
-128				12.80%			 2.5x
-256				25.60%			 2.3x
-----------------------------------------
-10				1.00%			 2.7x
-50				5.00%			 1.9x
-100				10.00%			 2.1x
-250				25.00%			 2.3x
-500				50.00%			 2.2x
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR	INFERENCE TIME
+1				0.10%			1.0x			56.5s
+16				1.60%			1.5x			38.1s
+32				3.20%			2.0x			28.9s
+64				6.40%			2.3x			24.3s
+128				12.80%			2.5x			22.5s
+256				25.60%			2.3x			24.7s
+--------------------------------------------------------------
+10				1.00%			2.7x			21.3s
+50				5.00%			1.9x			29.8s
+100				10.00%			2.1x			26.5s
+250				25.00%			2.3x			24.8s
+500				50.00%			2.2x			26.1s
 
 statistics,
 Mean multiplicator: 2.1x
 Std multiplicator: 0.5x
+Mean inference time: 29.4s
 
 
 betti for the singular pipeline,
 
-ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
-1				0.10%			 1.0x
-16				1.60%			 2.5x
-32				3.20%			 2.7x
-64				6.40%			 2.9x
-128				12.80%			 3.0x
-256				25.60%			 3.0x
-----------------------------------------
-10				1.00%			 2.3x
-50				5.00%			 2.8x
-100				10.00%			 3.0x
-250				25.00%			 3.1x
-500				50.00%			 3.1x
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR	INFERENCE TIME
+1				0.10%			1.0x			10.7s
+16				1.60%			2.5x			4.3s
+32				3.20%			2.7x			3.9s
+64				6.40%			2.9x			3.7s
+128				12.80%			3.0x			3.6s
+256				25.60%			3.0x			3.5s
+--------------------------------------------------------------
+10				1.00%			2.3x			4.7s
+50				5.00%			2.8x			3.8s
+100				10.00%			3.0x			3.5s
+250				25.00%			3.1x			3.5s
+500				50.00%			3.1x			3.5s
 
 statistics,
 Mean multiplicator: 2.7x
 Std multiplicator: 0.6x
+Mean inference time: 4.4s
 
 
 betti for the ensemble pipeline,
 
-ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
-1				0.10%			 1.0x
-16				1.60%			 2.1x
-32				3.20%			 2.9x
-64				6.40%			 3.6x
-128				12.80%			 4.0x
-256				25.60%			 4.2x
-----------------------------------------
-10				1.00%			 1.9x
-50				5.00%			 3.3x
-100				10.00%			 3.8x
-250				25.00%			 4.2x
-500				50.00%			 4.4x
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR	INFERENCE TIME
+1				0.10%			1.0x			21.3s
+16				1.60%			2.1x			9.9s
+32				3.20%			2.9x			7.5s
+64				6.40%			3.6x			6.0s
+128				12.80%			4.0x			5.4s
+256				25.60%			4.2x			5.1s
+--------------------------------------------------------------
+10				1.00%			1.9x			11.4s
+50				5.00%			3.3x			6.4s
+100				10.00%			3.8x			5.7s
+250				25.00%			4.2x			5.1s
+500				50.00%			4.4x			4.8s
 
 statistics,
 Mean multiplicator: 3.2x
 Std multiplicator: 1.1x
+Mean inference time: 8.0s
 
 
 ps2d+betti for the singular pipeline,
 
-ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
-1				0.10%			 1.0x
-16				1.60%			 1.6x
-32				3.20%			 2.0x
-64				6.40%			 2.1x
-128				12.80%			 2.2x
-256				25.60%			 1.8x
-----------------------------------------
-10				1.00%			 2.5x
-50				5.00%			 2.1x
-100				10.00%			 2.1x
-250				25.00%			 1.8x
-500				50.00%			 1.1x
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR	INFERENCE TIME
+1				0.10%			1.0x			17.6s
+16				1.60%			1.6x			10.8s
+32				3.20%			2.0x			9.0s
+64				6.40%			2.1x			8.5s
+128				12.80%			2.2x			8.0s
+256				25.60%			1.8x			9.8s
+--------------------------------------------------------------
+10				1.00%			2.5x			7.1s
+50				5.00%			2.1x			8.4s
+100				10.00%			2.1x			8.4s
+250				25.00%			1.8x			9.9s
+500				50.00%			1.1x			15.4s
 
 statistics,
 Mean multiplicator: 1.8x
 Std multiplicator: 0.4x
+Mean inference time: 10.3s
 
 
 ps2d+betti for the ensemble pipeline,
 
-ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
-1				0.10%			 1.0x
-16				1.60%			 1.2x
-32				3.20%			 1.5x
-64				6.40%			 1.8x
-128				12.80%			 1.9x
-256				25.60%			 1.8x
-----------------------------------------
-10				1.00%			 2.2x
-50				5.00%			 1.5x
-100				10.00%			 1.6x
-250				25.00%			 1.8x
-500				50.00%			 1.7x
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR	INFERENCE TIME
+1				0.10%			1.0x			43.1s
+16				1.60%			1.2x			36.3s
+32				3.20%			1.5x			28.5s
+64				6.40%			1.8x			24.5s
+128				12.80%			1.9x			22.6s
+256				25.60%			1.8x			24.1s
+--------------------------------------------------------------
+10				1.00%			2.2x			19.5s
+50				5.00%			1.5x			29.6s
+100				10.00%			1.6x			26.8s
+250				25.00%			1.8x			24.4s
+500				50.00%			1.7x			25.8s
 
 statistics,
 Mean multiplicator: 1.6x
 Std multiplicator: 0.3x
+Mean inference time: 27.7s
 
 
 General statistics,
 Singular pipeline overall multiplicator mean: 2.2x
 Ensemble pipeline overall multiplicator mean: 2.3x
 Overal multiplicator mean: 2.2x
+Overal inference time mean: 15.6s
