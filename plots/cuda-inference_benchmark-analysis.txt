@@ -1,0 +1,130 @@
+ps2d for the singular pipeline,
+
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
+1				0.10%			 1.0x
+16				1.60%			 11.8x
+32				3.20%			 15.2x
+64				6.40%			 18.3x
+128				12.80%			 20.3x
+256				25.60%			 20.1x
+----------------------------------------
+10				1.00%			 8.7x
+50				5.00%			 17.6x
+100				10.00%			 20.3x
+250				25.00%			 20.2x
+500				50.00%			 17.7x
+
+statistics,
+Mean multiplicator: 15.6x
+Std multiplicator: 5.9x
+
+
+ps2d for the ensemble pipeline,
+
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
+1				0.10%			 1.0x
+16				1.60%			 13.6x
+32				3.20%			 24.8x
+64				6.40%			 39.7x
+128				12.80%			 52.8x
+256				25.60%			 62.0x
+----------------------------------------
+10				1.00%			 8.7x
+50				5.00%			 33.9x
+100				10.00%			 48.3x
+250				25.00%			 62.1x
+500				50.00%			 69.6x
+
+statistics,
+Mean multiplicator: 37.9x
+Std multiplicator: 22.4x
+
+
+betti for the singular pipeline,
+
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
+1				0.10%			 1.0x
+16				1.60%			 9.6x
+32				3.20%			 14.5x
+64				6.40%			 18.9x
+128				12.80%			 21.8x
+256				25.60%			 22.2x
+----------------------------------------
+10				1.00%			 6.9x
+50				5.00%			 17.5x
+100				10.00%			 21.0x
+250				25.00%			 22.1x
+500				50.00%			 20.3x
+
+statistics,
+Mean multiplicator: 16.0x
+Std multiplicator: 6.8x
+
+
+betti for the ensemble pipeline,
+
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
+1				0.10%			 1.0x
+16				1.60%			 10.0x
+32				3.20%			 17.4x
+64				6.40%			 27.9x
+128				12.80%			 38.8x
+256				25.60%			 47.4x
+----------------------------------------
+10				1.00%			 6.7x
+50				5.00%			 24.8x
+100				10.00%			 35.8x
+250				25.00%			 47.8x
+500				50.00%			 54.4x
+
+statistics,
+Mean multiplicator: 28.4x
+Std multiplicator: 17.3x
+
+
+ps2d+betti for the singular pipeline,
+
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
+1				0.10%			 1.0x
+16				1.60%			 8.5x
+32				3.20%			 12.6x
+64				6.40%			 16.3x
+128				12.80%			 18.6x
+256				25.60%			 18.4x
+----------------------------------------
+10				1.00%			 6.1x
+50				5.00%			 15.1x
+100				10.00%			 17.8x
+250				25.00%			 18.7x
+500				50.00%			 17.1x
+
+statistics,
+Mean multiplicator: 13.7x
+Std multiplicator: 5.7x
+
+
+ps2d+betti for the ensemble pipeline,
+
+ABSOLUTE SIZE 	RELATIVE SIZE	MULTIPLICATOR
+1				0.10%			 1.0x
+16				1.60%			 10.4x
+32				3.20%			 18.3x
+64				6.40%			 29.8x
+128				12.80%			 39.5x
+256				25.60%			 46.6x
+----------------------------------------
+10				1.00%			 7.2x
+50				5.00%			 25.8x
+100				10.00%			 36.4x
+250				25.00%			 46.6x
+500				50.00%			 52.3x
+
+statistics,
+Mean multiplicator: 28.5x
+Std multiplicator: 16.7x
+
+
+General statistics,
+Singular pipeline overall multiplicator mean: 15.1x
+Ensemble pipeline overall multiplicator mean: 31.6x
+Overal multiplicator mean: 23.3x

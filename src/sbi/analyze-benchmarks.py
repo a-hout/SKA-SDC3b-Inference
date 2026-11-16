@@ -127,7 +127,65 @@ def inferrence_plotting(cpu_json, cuda_json):
     cuda_figure.savefig('plots/cuda_inference_benchmark.png', dpi=300)
 
 def inferrence_analysis(cpu_json, cuda_json):
-    pass
+    batches = list(cpu_json[0]["ps2d"]["singular"].keys()) #same for all plots
+    #cpu
+    print("CPU")
+    mult_list_overall = []
+    cpu_data = cpu_json[0]
+    for data_type in ["ps2d", "betti", "ps2d+betti"]:
+        for pipeline in ["singular", "ensemble"]:
+                mean_values = np.mean([np.array(list(cpu_json[i][data_type][pipeline].values())) for i in range(len(cpu_json))], axis=0)
+                cpu_data[data_type][pipeline] = dict(zip(batches, mean_values))
+                print(f"\n\n{data_type} for the {pipeline} pipeline,")
+                print("\nABSOLUTE SIZE \tRELATIVE SIZE\tMULTIPLICATOR")
+                mult_list = []
+                for batch, mult in zip(batches, mean_values[0]/mean_values):
+                    mult_list.append(mult)
+                    if batch=='10':
+                        print(f"{40*'-'}")
+                    print(f"{batch}\t\t\t\t{(float(batch)/1000*100):.2f}%\t\t\t {mult:.1f}x")
+                    #print(f"batch size {batch}/{int((float(batch)/1000)*100):.2f}%:\t {mult:.1f}x")
+                mult_list = np.array(mult_list)
+                print("\nstatistics,")
+                print(f"Mean multiplicator: {np.mean(mult_list):.1f}x")
+                print(f"Std multiplicator: {np.std(mult_list):.1f}x")
+                mult_list_overall.append(mult_list)
+
+    mult_list_overall = np.array(mult_list_overall)
+    print("\n\nGeneral statistics,")
+    print(f"Singular pipeline overall multiplicator mean: {np.mean(mult_list_overall[0::2]):.1f}x")
+    print(f"Ensemble pipeline overall multiplicator mean: {np.mean(mult_list_overall[1::2]):.1f}x")
+    print(f"Overal multiplicator mean: {np.mean(mult_list_overall):.1f}x")
+
+    #cuda
+    print("\n\n\nCUDA")
+    cuda_data = cuda_json[0]
+    mult_list_overall = []
+    for data_type in ["ps2d", "betti", "ps2d+betti"]:
+        for pipeline in ["singular", "ensemble"]:
+                mean_values = np.mean([np.array(list(cuda_json[i][data_type][pipeline].values())) for i in range(len(cuda_json))], axis=0)
+                cuda_data[data_type][pipeline] = dict(zip(batches, mean_values))
+                print(f"\n\n{data_type} for the {pipeline} pipeline,")
+                print("\nABSOLUTE SIZE \tRELATIVE SIZE\tMULTIPLICATOR")
+                mult_list = []
+                for batch, mult in zip(batches, mean_values[0]/mean_values):
+                    mult_list.append(mult)
+                    if batch=='10':
+                        print(f"{40*'-'}")
+                    print(f"{batch}\t\t\t\t{(float(batch)/1000*100):.2f}%\t\t\t {mult:.1f}x")
+                    #print(f"batch size {batch}/{int((float(batch)/1000)*100):.2f}%:\t {mult:.1f}x")
+                mult_list = np.array(mult_list)
+                print("\nstatistics,")
+                print(f"Mean multiplicator: {np.mean(mult_list):.1f}x")
+                print(f"Std multiplicator: {np.std(mult_list):.1f}x")
+                mult_list_overall.append(mult_list)
+
+    mult_list_overall = np.array(mult_list_overall)
+    print("\n\nGeneral statistics,")
+    print(f"Singular pipeline overall multiplicator mean: {np.mean(mult_list_overall[0::2]):.1f}x")
+    print(f"Ensemble pipeline overall multiplicator mean: {np.mean(mult_list_overall[1::2]):.1f}x")
+    print(f"Overal multiplicator mean: {np.mean(mult_list_overall):.1f}x")
+
 
 if __name__ == "__main__":
     cpu = ["13-8-57", "13-9-14", "13-9-31", "13-9-49", "13-10-6"]
@@ -144,5 +202,5 @@ if __name__ == "__main__":
             cuda_json.append(json.load(f))
         f.close()
 
-    inferrence_plotting(cpu_json, cuda_json)
+    #inferrence_plotting(cpu_json, cuda_json)
     inferrence_analysis(cpu_json, cuda_json)
