@@ -18,7 +18,7 @@ from sbi.inference import DirectPosterior
 from tqdm import tqdm
 
 
-def infer_parameters(OBS_TYPE, OBS_PATH, MODEL_PATH):
+def infer_parameters(OBS_TYPE, OBS_PATH, MODEL_PATH, device):
     match OBS_TYPE:
         case "ps2d":
             print("\nInfering on PS2D observations...\n")
@@ -36,10 +36,10 @@ def infer_parameters(OBS_TYPE, OBS_PATH, MODEL_PATH):
     posterior = torch.load(
         MODEL_PATH,
         weights_only=False,
-        map_location="cpu",
+        map_location=device,
     )
     if OBS_TYPE != "ps2d+betti":
-        shape = (3, 10, 10) if OBS_TYPE=="ps2d" else (3, 3, 21) # if OBS_TYPE=="betti" else (3, 10, 10)
+        shape = (3, 10, 10) if OBS_TYPE=="ps2d" else (3, 3, 21)
         x_test = np.reshape(np.loadtxt(OBS_PATH), (-1, shape[0], shape[1], shape[2]))
     else:
         ps2d_obs = torch.as_tensor(np.reshape(np.loadtxt(OBS_PATH[0]), (-1, 3, 10, 10)), dtype=torch.float32, device=device)
@@ -64,15 +64,14 @@ def infer_parameters(OBS_TYPE, OBS_PATH, MODEL_PATH):
                     x=x_batch,
                     show_progress_bars=False,
                 )
-                theta_pred.append(samples.mean(dim=0).cpu())
+
+                theta_pred.append(samples.mean(dim=0).to(device))
 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
 
         theta_pred = torch.cat(theta_pred)
         bench_batch[batch_size] = time.time() - bench_start
-
-    #theta_pred, benchmark_theta_pred_sampling = benchmark_helper.theta_pred_sampling_benchmark(x_test, posterior)
 
     theta_pred = theta_pred.numpy()
     mean = theta_pred.mean(axis=0)
@@ -85,54 +84,16 @@ def infer_parameters(OBS_TYPE, OBS_PATH, MODEL_PATH):
         print(f"For {bin} reionization, \tin terms of xHI presence, there is a minimum of {min_i*100:.2f}%, a mean of {mean_i*100:.2f}%, and a maximum of {max_i*100:.2f}%")
     print(f"{'-'*120}")
     print(f"Time to infer batched sampling: {bench_batch}")
-    #print(f"Time to infer sampling per obs: {benchmark_theta_pred_sampling[0]["total time sampling"]}")
     return bench_batch
 
 if __name__ == "__main__":
     device = (
         "cuda"
         if torch.cuda.is_available()
-        #else "mps"
-        #if torch.mps.is_available()
         else "cpu"
     )
     _ = torch.manual_seed(831) #random number for random generator
 
-    """
-    try:
-        MODEL_PATH = sys.argv[1]
-    except IndexError:
-        print(
-            "Normal usage is: python src/sbi/benchmark_sbi_inference.py <model_path> <observation_path> <observation_type>"
-        )
-        sys.exit(1)
-
-    try:
-        OBS_PATH = sys.argv[2]   # load path with observations
-    except IndexError:
-        print(
-            "Normal usage is: python src/sbi/benchmark_sbi_inference.py <model_path> <observation_path> <observation_type>"
-        )
-        sys.exit(1)
-
-    try:
-        OBS_TYPE = sys.argv[3].lower()
-    except IndexError:
-        print(
-            "Normal usage is: python src/sbi/benchmark_sbi_inference.py <model_path> <observation_path> <observation_type>"
-        )
-        sys.exit(1)
-
-
-    ambiguous_path = MODEL_PATH.split('/')
-    model = ambiguous_path[1]
-    ambiguous_path.remove(MODEL_PATH.split('/')[1])
-    other_model = "sbi" if "ensemble-sbi"==model else "ensemble-sbi"
-    ambiguous_path.insert(1, other_model)
-    other_path = '/'.join(ambiguous_path)
-    paths = [MODEL_PATH, other_model]
-
-    """
     OBS_PATH = ["datasets/mock_ps2d_obs_1000.txt", "datasets/mock_betti_obs_1000.txt"]
     obs_len = 1000
     OBS_TYPE = ["ps2d", "betti", "ps2d+betti"]
@@ -141,8 +102,8 @@ if __name__ == "__main__":
         benchmarks = {"ps2d": {},"betti": {},"ps2d+betti": {},}
 
         for data_type in OBS_TYPE:
-            benchmarks[data_type]["singular"] = infer_parameters(data_type, OBS_PATH[0] if data_type=="ps2d" else OBS_PATH[1] if data_type=="betti" else OBS_PATH, f"models/sbi/{data_type}/best_posterior.pt")
-            benchmarks[data_type]["ensemble"] = infer_parameters(data_type, OBS_PATH[0] if data_type=="ps2d" else OBS_PATH[1] if data_type=="betti" else OBS_PATH, f"models/ensemble-sbi/{data_type}/best_posterior.pt")
+            benchmarks[data_type]["singular"] = infer_parameters(data_type, OBS_PATH[0] if data_type=="ps2d" else OBS_PATH[1] if data_type=="betti" else OBS_PATH, f"models/sbi/{data_type}/best_posterior.pt", device)
+            benchmarks[data_type]["ensemble"] = infer_parameters(data_type, OBS_PATH[0] if data_type=="ps2d" else OBS_PATH[1] if data_type=="betti" else OBS_PATH, f"models/ensemble-sbi/{data_type}/best_posterior.pt", device)
 
 
         local_time = time.localtime() #to get day-hour-min

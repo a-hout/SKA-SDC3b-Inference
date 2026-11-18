@@ -29,7 +29,7 @@ def inferrence_plotting(cpu_json, cuda_json):
 
     cpu_figure, cpu_axs = plt.subplots(2, 2, figsize=(12,7), dpi=150)
 
-    cpu_x_singular_left, cpu_x_singular_right = batches[:5], [f"{int((float(batch)/1000)*100)}%" for batch in batches[6:]]
+    cpu_x_singular_left, cpu_x_singular_right = batches[:5], [f"{int((float(batch)/1000)*100)}% ({batch})" for batch in batches[6:]]
     cpu_y_singular = [np.array(list(cpu_data[data_type]["singular"].values()))[0]/np.array(list(cpu_data[data_type]["singular"].values())) for data_type in ["ps2d", "betti", "ps2d+betti"]]
     cpu_y_singular_left, cpu_y_singular_right = [y[:5] for y in cpu_y_singular], [y[6:] for y in cpu_y_singular]
     cpu_y_ensemble = [np.array(list(cpu_data[data_type]["ensemble"].values()))[0]/np.array(list(cpu_data[data_type]["ensemble"].values())) for data_type in ["ps2d", "betti", "ps2d+betti"]]
@@ -79,7 +79,7 @@ def inferrence_plotting(cpu_json, cuda_json):
                 cuda_data[data_type][pipeline] = dict(zip(batches, mean_values))
 
     cuda_figure, cuda_axs = plt.subplots(2, 2, figsize=(12,7), dpi=150)
-    cuda_x_singular_left, cuda_x_singular_right = batches[:5], [f"{int((float(batch)/1000)*100)}%" for batch in batches[6:]]
+    cuda_x_singular_left, cuda_x_singular_right = batches[:5], [f"{int((float(batch)/1000)*100)}%  ({batch})" for batch in batches[6:]]
     cuda_y_singular = [np.array(list(cuda_data[data_type]["singular"].values()))[0]/np.array(list(cuda_data[data_type]["singular"].values())) for data_type in ["ps2d", "betti", "ps2d+betti"]]
     cuda_y_singular_left, cuda_y_singular_right = [y[:5] for y in cuda_y_singular], [y[6:] for y in cuda_y_singular]
     cuda_y_ensemble = [np.array(list(cuda_data[data_type]["ensemble"].values()))[0]/np.array(list(cuda_data[data_type]["ensemble"].values())) for data_type in ["ps2d", "betti", "ps2d+betti"]]
@@ -208,5 +208,5 @@ if __name__ == "__main__":
             cuda_json.append(json.load(f))
         f.close()
 
-    #inferrence_plotting(cpu_json, cuda_json)
+    inferrence_plotting(cpu_json, cuda_json)
     inferrence_analysis(cpu_json, cuda_json)
