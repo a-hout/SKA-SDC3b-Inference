@@ -1,0 +1,14 @@
+Inference time per observation [ms] - cuda
+30 runs, over 10,000 samples
+
+ps2d | singular: mean=106.723  std=67.251  median=94.460  min=80.173  max=459.480  95% CI of mean=[81.611, 131.835]
+ps2d | ensemble: mean=324.352  std=17.615  median=321.844  min=287.898  max=367.505  95% CI of mean=[317.774, 330.930]
+ps2d | ensemble/singular: mean=3.38  std=0.65
+
+betti | singular: mean=77.245  std=13.812  median=73.135  min=61.049  max=123.758  95% CI of mean=[72.087, 82.402]
+betti | ensemble: mean=288.613  std=31.870  median=286.875  min=239.139  max=386.361  95% CI of mean=[276.713, 300.514]
+betti | ensemble/singular: mean=3.83  std=0.68
+
+ps2d+betti | singular: mean=77.639  std=11.095  median=75.111  min=65.082  max=116.872  95% CI of mean=[73.496, 81.781]
+ps2d+betti | ensemble: mean=280.114  std=30.174  median=271.755  min=236.144  max=368.303  95% CI of mean=[268.846, 291.381]
+ps2d+betti | ensemble/singular: mean=3.66  std=0.56

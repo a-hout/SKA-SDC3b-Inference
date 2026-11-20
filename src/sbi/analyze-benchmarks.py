@@ -74,6 +74,36 @@ def inferrence_analysis(data, n, unit, device):
     with open(f"plots/{device}-inferrence.txt", "w") as f:
         f.write("\n".join(lines))
 
+def compare_devices(runs_cpu, runs_cuda, scale=1e3, unit="ms"):
+    data_type, pipeline_type = list(runs_cpu[0]), list(runs_cpu[0][next(iter(runs_cpu[0]))])
+    get = lambda runs, m, k: np.array([r[m][k] for r in runs]) * scale
+
+    lines = [f"CPU vs CUDA, inference time per observation [{unit}]",
+             "speedup = CPU / CUDA (>1: CUDA faster, <1: CUDA slower)", ""]
+    speedup, err = {}, {}
+    for k in pipeline_type:
+        speedup[k], err[k] = [], []
+        for m in data_type:
+            c, g = get(runs_cpu, m, k), get(runs_cuda, m, k)
+            s = c.mean() / g.mean()
+            e = s * np.sqrt((stats.sem(c) / c.mean())**2 + (stats.sem(g) / g.mean())**2)  #standard errror of the ratio
+            speedup[k].append(s); err[k].append(e)
+            lines.append(f"{m} | {k}: CPU={c.mean():.3f}  CUDA={g.mean():.3f}  speedup={s:.2f} ± {e:.2f}")
+    open("plots/cpu-vs-cuda.txt", "w").write("\n".join(lines))
+
+    colors = {"singular": "#3b6fb6", "ensemble": "#d9822b"}
+    x = np.arange(len(data_type))
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    for j, k in enumerate(pipeline_type):
+        ax.bar(x + (j - 0.5) * 0.35, speedup[k], 0.35, yerr=err[k], capsize=4, color=colors[k], alpha=0.8, label=k)
+    ax.axhline(1, color="red", ls="--", lw=1)
+    ax.set_xticks(x, data_type)
+    ax.set(ylabel="speedup (CPU time / CUDA time)", title="CUDA speedup over CPU")
+    ax.legend(frameon=False)
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("plots/cpu-vs-cuda.png", dpi=300)
+
 if __name__ == "__main__":
     cpu_json = []
     cuda_json = []
@@ -82,8 +112,9 @@ if __name__ == "__main__":
             cpu_json.append(json.load(f))
         f.close()
     inferrence_plotting(cpu_json, "cpu")
-    """for cuda_file in range(30):
+    for cuda_file in range(30):
         with open(f"benchmarks/inferring/cuda/{cuda_file}.json") as f:
             cuda_json.append(json.load(f))
         f.close()
-    inferrence_plotting(cuda_json, "cuda)"""
+    inferrence_plotting(cuda_json, "cuda")
+    compare_devices(cpu_json, cuda_json)

@@ -1,0 +1,9 @@
+CPU vs CUDA, inference time per observation [ms]
+speedup = CPU / CUDA (>1: CUDA faster, <1: CUDA slower)
+
+ps2d | singular: CPU=94.145  CUDA=106.723  speedup=0.88 ± 0.10
+betti | singular: CPU=47.672  CUDA=77.245  speedup=0.62 ± 0.02
+ps2d+betti | singular: CPU=62.136  CUDA=77.639  speedup=0.80 ± 0.02
+ps2d | ensemble: CPU=180.545  CUDA=324.352  speedup=0.56 ± 0.01
+betti | ensemble: CPU=62.074  CUDA=288.613  speedup=0.22 ± 0.00
+ps2d+betti | ensemble: CPU=136.453  CUDA=280.114  speedup=0.49 ± 0.01
