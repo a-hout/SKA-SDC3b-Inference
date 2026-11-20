@@ -50,41 +50,12 @@ def infer_parameters(OBS_TYPE, OBS_PATH, MODEL_PATH, device):
         x_test = torch.cat((ps2d_flat, betti_flat), dim=1)
     x_test = torch.as_tensor(x_test, dtype=torch.float32, device=device)
 
-    theta_pred = []
-    bench_batch = {}
-    batch_size_list = [1, 16, 32, 64, 128, 256, int(x_test.shape[0]*0.01), int(x_test.shape[0]*0.05), int(x_test.shape[0]*0.10), int(x_test.shape[0]*0.25), int(x_test.shape[0]*0.5)]
-    for batch_size in batch_size_list:
-        theta_pred = []
-        bench_start = time.time()
-        with torch.no_grad():
-            for i in tqdm(range(0, len(x_test), batch_size), desc="Sampling test observations"):
-                x_batch = x_test[i:i + batch_size]
-                samples = posterior.sample_batched(
-                    (1000,),
-                    x=x_batch,
-                    show_progress_bars=False,
-                )
+    start = time.time()
+    with torch.no_grad():
+        samples = posterior.sample((10000,), x=x_test[0])
+        theta_pred = samples.mean(dim=0).to(device).numpy()
 
-                theta_pred.append(samples.mean(dim=0).to(device))
-
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-
-        theta_pred = torch.cat(theta_pred)
-        bench_batch[batch_size] = time.time() - bench_start
-
-    theta_pred = theta_pred.numpy()
-    mean = theta_pred.mean(axis=0)
-    max = theta_pred.max(axis=0)
-    min = theta_pred.min(axis=0)
-
-    print(f"\n\nInference results for a window size of {x_test.shape[0]} {OBS_TYPE} observations")
-    print(f"{'-'*120}")
-    for max_i, mean_i, min_i, bin in zip(max, mean, min, ["low", "mid", "high"]):
-        print(f"For {bin} reionization, \tin terms of xHI presence, there is a minimum of {min_i*100:.2f}%, a mean of {mean_i*100:.2f}%, and a maximum of {max_i*100:.2f}%")
-    print(f"{'-'*120}")
-    print(f"Time to infer batched sampling: {bench_batch}")
-    return bench_batch
+    return time.time() - start
 
 if __name__ == "__main__":
     device = (
@@ -95,10 +66,9 @@ if __name__ == "__main__":
     _ = torch.manual_seed(831) #random number for random generator
 
     OBS_PATH = ["datasets/mock_ps2d_obs_1000.txt", "datasets/mock_betti_obs_1000.txt"]
-    obs_len = 1000
     OBS_TYPE = ["ps2d", "betti", "ps2d+betti"]
 
-    for _ in range(5):
+    for i in range(30):
         benchmarks = {"ps2d": {},"betti": {},"ps2d+betti": {},}
 
         for data_type in OBS_TYPE:
@@ -109,8 +79,13 @@ if __name__ == "__main__":
         local_time = time.localtime() #to get day-hour-min
         if not os.path.isdir("benchmarks"):
             os.mkdir("benchmarks")
+        if not os.path.isdir("benchmarks/inferring"):
+            os.mkdir("benchmarks/inferring")
 
-        with open(f"benchmarks/{device}-inferring-{obs_len}-obs-benchmark-{local_time.tm_mday}-{local_time.tm_hour}-{local_time.tm_min}.json", "w") as f: #timestamp at the end in case we want multiple benchmarks of the same pipeline/data
+        if not os.path.isdir(f"benchmarks/inferring/{device}"):
+            os.mkdir(f"benchmarks/inferring/{device}")
+
+        with open(f"benchmarks/inferring/{device}/{i}.json", "w") as f:
             json.dump(
                 benchmarks,
                 f,
@@ -118,16 +93,3 @@ if __name__ == "__main__":
             )
 
         pprint(benchmarks)
-    """
-    betti random mock observations
-    for _ in range(100):
-        for _ in range(3):
-            for _ in range(3):
-                    print(f"{[float(rando) for rando in np.random.rand(21)]}")
-
-    ps2d random mock observations
-    for _ in range(100):
-        for _ in range(3):
-            for _ in range(10):
-                    print(f"{[float(rando) for rando in np.random.rand(10)]}")
-    """

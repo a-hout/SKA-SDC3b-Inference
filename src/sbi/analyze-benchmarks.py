@@ -6,207 +6,84 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
+from scipy import stats
 
 sns.set_theme(style="ticks", context="notebook")
 
-def inferrence_plotting(cpu_json, cuda_json):
-    """
-    Plot a duo table for CPU and CUDA each with four plots
-    Left plot is relative times for batch sizes for 1, 16, 32, 64, 128, 256. Not plotting the raw numbers but rather the speed increase compared to 1-sample sampling
-    Right plot relative times for percentage of the dataset as batch size. Same principle as left plot.
+def inferrence_plotting(json, device):
+    unit, scale= "ms", 1e3
 
-    Each plot will plot the three data types, top plots the singular and bottom plots the ensemble posterior sampling
-    """
+    runs = json
+    data_type, pipeline_type = list(runs[0]), list(runs[0][next(iter(runs[0]))])
+    data = {m: {k: np.array([r[m][k] for r in runs]) * scale for k in pipeline_type} for m in data_type}
+    n = len(runs)
 
-    batches = list(cpu_json[0]["ps2d"]["singular"].keys()) #same for all plots
+    #plot
+    rng = np.random.default_rng(0)
 
-    #cpu
-    cpu_data = cpu_json[0]
-    for data_type in ["ps2d", "betti", "ps2d+betti"]:
-        for pipeline in ["singular", "ensemble"]:
-                mean_values = np.mean([np.array(list(cpu_json[i][data_type][pipeline].values())) for i in range(len(cpu_json))], axis=0)
-                cpu_data[data_type][pipeline] = dict(zip(batches, mean_values))
+    def draw(ax, positions, values, color, width):
+        """box and per-run dots with mean and std marker."""
+        bp = ax.boxplot(values, positions=positions, widths=width, showfliers=False,
+                        patch_artist=True, medianprops=dict(color="black"))
+        for box in bp["boxes"]:
+            box.set(facecolor=color, alpha=0.35, edgecolor=color)
+        for pos, v in zip(positions, values):
+            ax.scatter(pos + rng.uniform(-width / 3, width / 3, len(v)), v, s=12, color=color, alpha=0.7, zorder=3)
+            ax.errorbar(pos, v.mean(), yerr=v.std(ddof=1), fmt="D", color="black", ms=5, capsize=4, zorder=4)
 
-    cpu_figure, cpu_axs = plt.subplots(2, 2, figsize=(12,7), dpi=150)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.8), gridspec_kw={"width_ratios": [3, 2]})
+    x = np.arange(len(data_type))
+    colors = {"singular": "#3b6fb6", "ensemble": "#d9822b"}
 
-    cpu_x_singular_left, cpu_x_singular_right = batches[:5], [f"{int((float(batch)/1000)*100)}% ({batch})" for batch in batches[6:]]
-    cpu_y_singular = [np.array(list(cpu_data[data_type]["singular"].values()))[0]/np.array(list(cpu_data[data_type]["singular"].values())) for data_type in ["ps2d", "betti", "ps2d+betti"]]
-    cpu_y_singular_left, cpu_y_singular_right = [y[:5] for y in cpu_y_singular], [y[6:] for y in cpu_y_singular]
-    cpu_y_ensemble = [np.array(list(cpu_data[data_type]["ensemble"].values()))[0]/np.array(list(cpu_data[data_type]["ensemble"].values())) for data_type in ["ps2d", "betti", "ps2d+betti"]]
-    cpu_y_ensemble_left, cpu_y_ensemble_right = [y[:5] for y in cpu_y_ensemble], [y[6:] for y in cpu_y_ensemble]
+    for j, k in enumerate(pipeline_type):
+        draw(ax1, x + (j - 0.5) * 0.35, [data[m][k] for m in data_type], colors[k], 0.28)
+        ax1.scatter([], [], color=colors[k], label=k)
+    ax1.errorbar([], [], yerr=[], fmt="D", color="black", capsize=4, label="mean ± std")
+    ax1.set(ylabel=f"Time per observation [{unit}]",
+            title=f"Distribution of 1-obs inferrence time ({n} runs, mean over 10,000 samples)")
+    ax1.legend(frameon=False)
 
-    cpu_axs[0,0].set_ylabel('Singular posterior')
-    cpu_axs[0, 0].plot(cpu_x_singular_left, cpu_y_singular_left[0], label='PS2D')
-    cpu_axs[0, 0].plot(cpu_x_singular_left, cpu_y_singular_left[1], label='Betti')
-    cpu_axs[0, 0].plot(cpu_x_singular_left, cpu_y_singular_left[2], label='PS2D + Betti')
-    cpu_axs[0,0].grid(axis='x')
-    cpu_axs[0, 0].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}x"))
-    cpu_axs[0, 0].set_ylim(bottom=1)
+    #ratio per run between singular and ensemble counterpart
+    draw(ax2, x, [data[m]["ensemble"] / data[m]["singular"] for m in data_type], "#666666", 0.5)
+    ax2.axhline(1, color="red", ls="--", lw=1)
+    ax2.set(ylabel="ensemble / singular time", title="Ensemble overhead compared to singular")
 
-    cpu_axs[0, 1].plot(cpu_x_singular_right, cpu_y_singular_right[0])
-    cpu_axs[0, 1].plot(cpu_x_singular_right, cpu_y_singular_right[1])
-    cpu_axs[0, 1].plot(cpu_x_singular_right, cpu_y_singular_right[2])
-    cpu_axs[0,1].grid(axis='x')
-    cpu_axs[0, 1].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}x"))
-    cpu_axs[0, 1].set_ylim(bottom=1)
+    for ax in (ax1, ax2):
+        ax.set_xticks(x, data_type)
+        ax.grid(axis="y", alpha=0.3)
 
-    cpu_axs[1,0].set_ylabel('5-Ensemble posterior')
-    cpu_axs[1, 0].set_xlabel("Absolute batch sizes")
-    cpu_axs[1, 0].plot(cpu_x_singular_left, cpu_y_ensemble_left[0])
-    cpu_axs[1, 0].plot(cpu_x_singular_left, cpu_y_ensemble_left[1])
-    cpu_axs[1, 0].plot(cpu_x_singular_left, cpu_y_ensemble_left[2])
-    cpu_axs[1,0].grid(axis='x')
-    cpu_axs[1, 0].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}x"))
-    cpu_axs[1, 0].set_ylim(bottom=1)
+    plt.tight_layout()
+    plt.savefig(f"plots/{device}-inferrence.png", dpi=300)
+    inferrence_analysis(data, n, unit, device)
 
-    cpu_axs[1, 1].set_xlabel("Proportional batch sizes (in %)")
-    cpu_axs[1, 1].plot(cpu_x_singular_right, cpu_y_ensemble_right[0])
-    cpu_axs[1, 1].plot(cpu_x_singular_right, cpu_y_ensemble_right[1])
-    cpu_axs[1, 1].plot(cpu_x_singular_right, cpu_y_ensemble_right[2])
-    cpu_axs[1,1].grid(axis='x')
-    cpu_axs[1, 1].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}x"))
-    cpu_axs[1, 1].set_ylim(bottom=1)
+def inferrence_analysis(data, n, unit, device):
+    lines = [f"Inference time per observation [{unit}] - {device}",
+                f"{n} runs, over 10,000 samples", ""]
 
-    cpu_figure.suptitle("CPU: Batched sampling of 1000 observations per data type")
-    cpu_figure.legend(loc="outside right upper", frameon=False)
-    #cpu_figure.show()
+    for m in data:
+        for k in data[m]:
+            x = data[m][k]
+            lo, hi = stats.t.interval(0.95, n - 1, loc=x.mean(), scale=stats.sem(x))
+            lines.append(f"{m} | {k}: mean={x.mean():.3f}  std={x.std(ddof=1):.3f}  "
+                            f"median={np.median(x):.3f}  min={x.min():.3f}  max={x.max():.3f}  "
+                            f"95% CI of mean=[{lo:.3f}, {hi:.3f}]")
+        r = data[m]["ensemble"] / data[m]["singular"]
+        lines.append(f"{m} | ensemble/singular: mean={r.mean():.2f}  std={r.std(ddof=1):.2f}")
+        lines.append("")
 
-    #cuda
-    cuda_data = cuda_json[0]
-    for data_type in ["ps2d", "betti", "ps2d+betti"]:
-        for pipeline in ["singular", "ensemble"]:
-                mean_values = np.mean([np.array(list(cuda_json[i][data_type][pipeline].values())) for i in range(len(cuda_json))], axis=0)
-                cuda_data[data_type][pipeline] = dict(zip(batches, mean_values))
-
-    cuda_figure, cuda_axs = plt.subplots(2, 2, figsize=(12,7), dpi=150)
-    cuda_x_singular_left, cuda_x_singular_right = batches[:5], [f"{int((float(batch)/1000)*100)}%  ({batch})" for batch in batches[6:]]
-    cuda_y_singular = [np.array(list(cuda_data[data_type]["singular"].values()))[0]/np.array(list(cuda_data[data_type]["singular"].values())) for data_type in ["ps2d", "betti", "ps2d+betti"]]
-    cuda_y_singular_left, cuda_y_singular_right = [y[:5] for y in cuda_y_singular], [y[6:] for y in cuda_y_singular]
-    cuda_y_ensemble = [np.array(list(cuda_data[data_type]["ensemble"].values()))[0]/np.array(list(cuda_data[data_type]["ensemble"].values())) for data_type in ["ps2d", "betti", "ps2d+betti"]]
-    cuda_y_ensemble_left, cuda_y_ensemble_right = [y[:5] for y in cuda_y_ensemble], [y[6:] for y in cuda_y_ensemble]
-
-
-    cuda_axs[0,0].set_ylabel('Singular posterior')
-    cuda_axs[0, 0].plot(cuda_x_singular_left, cuda_y_singular_left[0], label='PS2D')
-    cuda_axs[0, 0].plot(cuda_x_singular_left, cuda_y_singular_left[1], label='Betti')
-    cuda_axs[0, 0].plot(cuda_x_singular_left, cuda_y_singular_left[2], label='PS2D + Betti')
-    cuda_axs[0, 0].grid(axis='x')
-    cuda_axs[0, 0].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}x"))
-    cuda_axs[0, 0].set_ylim(bottom=1)
-
-    cuda_axs[0, 1].plot(cuda_x_singular_right, cuda_y_singular_right[0])
-    cuda_axs[0, 1].plot(cuda_x_singular_right, cuda_y_singular_right[1])
-    cuda_axs[0, 1].plot(cuda_x_singular_right, cuda_y_singular_right[2])
-    cuda_axs[0, 1].grid(axis='x')
-    cuda_axs[0, 1].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}x"))
-    cuda_axs[0, 1].set_ylim(bottom=1)
-
-    cuda_axs[1,0].set_ylabel('5-Ensemble posterior')
-    cuda_axs[1, 0].set_xlabel("Absolute batch sizes")
-    cuda_axs[1, 0].plot(cuda_x_singular_left, cuda_y_ensemble_left[0])
-    cuda_axs[1, 0].plot(cuda_x_singular_left, cuda_y_ensemble_left[1])
-    cuda_axs[1, 0].plot(cuda_x_singular_left, cuda_y_ensemble_left[2])
-    cuda_axs[1, 0].grid(axis='x')
-    cuda_axs[1, 0].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}x"))
-    cuda_axs[1, 0].set_ylim(bottom=1)
-
-    cuda_axs[1, 1].set_xlabel("Proportional batch sizes (in %)")
-    cuda_axs[1, 1].plot(cuda_x_singular_right, cuda_y_ensemble_right[0])
-    cuda_axs[1, 1].plot(cuda_x_singular_right, cuda_y_ensemble_right[1])
-    cuda_axs[1, 1].plot(cuda_x_singular_right, cuda_y_ensemble_right[2])
-    cuda_axs[1, 1].grid(axis='x')
-    cuda_axs[1, 1].yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:g}x"))
-    cuda_axs[1, 1].set_ylim(bottom=1)
-
-    cuda_figure.suptitle("CUDA: Batched sampling of 1000 observations per data type")
-    cuda_figure.legend(loc="outside right upper", frameon=False)
-
-    #plotting
-    #plt.show()
-    cpu_figure.savefig('plots/cpu_inference_benchmark.png', dpi=300)
-    cuda_figure.savefig('plots/cuda_inference_benchmark.png', dpi=300)
-
-def inferrence_analysis(cpu_json, cuda_json):
-    batches = list(cpu_json[0]["ps2d"]["singular"].keys()) #same for all plots
-    #cpu
-    print("CPU")
-    mult_list_overall = []
-    time_list = []
-    cpu_data = cpu_json[0]
-    for data_type in ["ps2d", "betti", "ps2d+betti"]:
-        for pipeline in ["singular", "ensemble"]:
-                mean_values = np.mean([np.array(list(cpu_json[i][data_type][pipeline].values())) for i in range(len(cpu_json))], axis=0)
-                cpu_data[data_type][pipeline] = dict(zip(batches, mean_values))
-                print(f"\n\n{data_type} for the {pipeline} pipeline,")
-                print("\nABSOLUTE SIZE \tRELATIVE SIZE\tMULTIPLICATOR\tINFERENCE TIME")
-                mult_list = []
-                for batch, mult, time in zip(batches, mean_values[0]/mean_values, mean_values):
-                    mult_list.append(mult)
-                    if batch=='10':
-                        print(f"{62*'-'}")
-                    print(f"{batch}\t\t\t\t{(float(batch)/1000*100):.2f}%\t\t\t{mult:.1f}x\t\t\t{time:.1f}s")
-                mult_list = np.array(mult_list)
-                print("\nstatistics,")
-                print(f"Mean multiplicator: {np.mean(mult_list):.1f}x")
-                print(f"Std multiplicator: {np.std(mult_list):.1f}x")
-                print(f"Mean inference time: {np.mean(mean_values):.1f}s")
-                mult_list_overall.append(mult_list)
-                time_list.append(mean_values)
-
-    mult_list_overall = np.array(mult_list_overall)
-    print("\n\nGeneral statistics,")
-    print(f"Singular pipeline overall multiplicator mean: {np.mean(mult_list_overall[0::2]):.1f}x")
-    print(f"Ensemble pipeline overall multiplicator mean: {np.mean(mult_list_overall[1::2]):.1f}x")
-    print(f"Overal multiplicator mean: {np.mean(mult_list_overall):.1f}x")
-    print(f"Overal inference time mean: {np.mean(np.array(time_list)):.1f}s")
-
-    #cuda
-    print("\n\n\nCUDA")
-    cuda_data = cuda_json[0]
-    mult_list_overall = []
-    time_list = []
-    for data_type in ["ps2d", "betti", "ps2d+betti"]:
-        for pipeline in ["singular", "ensemble"]:
-                mean_values = np.mean([np.array(list(cuda_json[i][data_type][pipeline].values())) for i in range(len(cuda_json))], axis=0)
-                cuda_data[data_type][pipeline] = dict(zip(batches, mean_values))
-                print(f"\n\n{data_type} for the {pipeline} pipeline,")
-                print("\nABSOLUTE SIZE \tRELATIVE SIZE\tMULTIPLICATOR\tINFERENCE TIME")
-                mult_list = []
-                for batch, mult, time in zip(batches, mean_values[0]/mean_values, mean_values):
-                    mult_list.append(mult)
-                    if batch=='10':
-                        print(f"{62*'-'}")
-                    print(f"{batch}\t\t\t\t{(float(batch)/1000*100):.2f}%\t\t\t{mult:.1f}x\t\t\t{time:.1f}s")
-                mult_list = np.array(mult_list)
-                print("\nstatistics,")
-                print(f"Mean multiplicator: {np.mean(mult_list):.1f}x")
-                print(f"Std multiplicator: {np.std(mult_list):.1f}x")
-                print(f"Mean inference time: {np.mean(mean_values):.1f}s")
-                mult_list_overall.append(mult_list)
-                time_list.append(mean_values)
-
-    mult_list_overall = np.array(mult_list_overall)
-    print("\n\nGeneral statistics,")
-    print(f"Singular pipeline overall multiplicator mean: {np.mean(mult_list_overall[0::2]):.1f}x")
-    print(f"Ensemble pipeline overall multiplicator mean: {np.mean(mult_list_overall[1::2]):.1f}x")
-    print(f"Overal multiplicator mean: {np.mean(mult_list_overall):.1f}x")
-    print(f"Overal inference time mean: {np.mean(np.array(time_list)):.1f}s")
-
+    with open(f"plots/{device}-inferrence.txt", "w") as f:
+        f.write("\n".join(lines))
 
 if __name__ == "__main__":
-    cpu = ["13-8-57", "13-9-14", "13-9-31", "13-9-49", "13-10-6"]
     cpu_json = []
-    cuda = ["13-8-55", "13-9-12", "13-9-29", "13-9-46", "13-10-2"]
     cuda_json = []
-    for cpu_file in cpu:
-        with open(f"benchmarks/cpu-inferring-1000-obs-benchmark-{cpu_file}.json") as f:
+    for cpu_file in range(30):
+        with open(f"benchmarks/inferring/cpu/{cpu_file}.json") as f:
             cpu_json.append(json.load(f))
         f.close()
-
-    for cuda_file in cuda:
-        with open(f"benchmarks/cuda-inferring-1000-obs-benchmark-{cuda_file}.json") as f:
+    inferrence_plotting(cpu_json, "cpu")
+    """for cuda_file in range(30):
+        with open(f"benchmarks/inferring/cuda/{cuda_file}.json") as f:
             cuda_json.append(json.load(f))
         f.close()
-
-    inferrence_plotting(cpu_json, cuda_json)
-    inferrence_analysis(cpu_json, cuda_json)
+    inferrence_plotting(cuda_json, "cuda)"""
