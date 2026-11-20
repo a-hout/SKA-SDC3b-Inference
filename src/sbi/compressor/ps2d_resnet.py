@@ -12,7 +12,7 @@ from torchvision.models import (
 )
 
 
-def train_resnet(x_train_img, x_test_img, theta_train, theta_test, batch_size, device):
+def train_resnet(x_train_img, x_test_img, theta_train, theta_test, batch_size, device, benchmark=False):
     resnet = PS2DResNet()
 
     #batch_size = 512 #bad habit, should be passed in parameters to be the same as the normalizing flow
@@ -37,7 +37,7 @@ def train_resnet(x_train_img, x_test_img, theta_train, theta_test, batch_size, d
     best_val_loss = float("inf")
     best_weights = None
     epochs_without_better_loss = 0  # after 10 epochs with no improvement, we stop
-
+    final_epoch = 0
     for epoch in range(max_epochs):
         print(f"epoch number {epoch}/{max_epochs}")
         resnet.train()  # train mode on (this means dropout is active) -> dropout should NOT be active after training when evaluating since the normalizing flow wants something it can go back and forth on
@@ -83,6 +83,7 @@ def train_resnet(x_train_img, x_test_img, theta_train, theta_test, batch_size, d
         else:
             epochs_without_better_loss += 1
 
+        final_epoch = epoch
         if epochs_without_better_loss >= 15:
             break  # early stopping
 
@@ -91,8 +92,8 @@ def train_resnet(x_train_img, x_test_img, theta_train, theta_test, batch_size, d
     resnet.eval()  # set to ecval mode so dropout is off when used by sbi
     for param in resnet.parameters():
         param.requires_grad = False  # freeze weigts
-
-    return resnet
+    if benchmark: return resnet, final_epoch
+    else: return resnet
 
 
 class PS2DResNet(nn.Module):
